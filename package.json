@@ -1,0 +1,93 @@
+{
+  "name": "vaporstow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cross-platform desktop client for managing files in supported Steam Cloud locations.",
+  "author": "Nullmess & Ybucaille",
+  "license": "MIT",
+  "main": "dist-electron/main.js",
+  "engines": {
+    "node": "22.x",
+    "npm": ">=10"
+  },
+  "allowScripts": {
+    "electron": true,
+    "esbuild": true,
+    "electron-winstaller": true
+  },
+  "scripts": {
+    "preinstall": "node -e \"if (process.versions.node.split('.')[0] !== '22') { console.error('VaporStow requires Node.js 22.x. Run: fnm use 22'); process.exit(1) }\"",
+    "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "rimraf dist dist-electron release && npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "clean": "rimraf dist dist-electron release node_modules coverage .cache .vite",
+    "build-win": "npm run build && electron-builder --win",
+    "build-mac": "npm run build && electron-builder --mac",
+    "build-lin": "npm run build && electron-builder --linux",
+    "app": "npm run build && electron .",
+    "build-all": "npm run build && electron-builder --win --linux --mac"
+  },
+  "dependencies": {
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.16.0",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "9.2.1",
+    "cross-env": "10.0.0",
+    "electron": "37.10.3",
+    "electron-builder": "26.0.12",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.2",
+    "vite": "7.3.6",
+    "wait-on": "8.0.4"
+  },
+  "build": {
+    "appId": "io.github.Nullmess.vaporstow",
+    "productName": "VaporStow",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "assets/icon.png"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility",
+      "icon": "assets/icon.png"
+    }
+  },
+  "contributors": [
+    {
+      "name": "Nullmess",
+      "url": "https://github.com/Nullmess"
+    },
+    {
+      "name": "Ybucaille",
+      "url": "https://github.com/Ybucaille"
+    }
+  ]
+}
