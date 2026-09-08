@@ -1,8 +1,30 @@
-# <h1 align="center">VaporStow</h1>
+<p align="center">
+    <img src="assets/icon.png" width="160" alt="VaporStow">
+</p>
 
-> ☁️ Cross-platform Steam Cloud file manager for supported games.
+<h1 align="center">
+    <strong>VaporStow</strong>
+</h1>
 
-![VaporStow desktop preview](assets/desktop.png)
+---
+
+<p align="center">
+    ☁️ Cross-platform Steam Cloud file manager for supported games.
+</p>
+
+<p align="center">
+    <a href="https://github.com/nullmess/VaporStow/stargazers">
+        <img src="https://img.shields.io/github/stars/nullmess/VaporStow?style=flat&logo=github" alt="Stars">
+    </a>
+    <a href="LICENSE">
+        <img src="https://img.shields.io/github/license/nullmess/VaporStow?style=flat" alt="License">
+    </a>
+    <img src="https://hits.sh/github.com/nullmess/VaporStow.svg?label=views" alt="Views">
+</p>
+
+<p align="center">
+    <img src="assets/desktop.png" alt="VaporStow preview">
+</p>
 
 ---
 
