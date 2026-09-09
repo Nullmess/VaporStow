@@ -90,7 +90,10 @@ async function revealInDefaultFileManager(target: string): Promise<void> {
 
 type BackgroundGuard = { timer: NodeJS.Timeout; busy: boolean; lastMode: string; affected: number; startedAt: number; stopped: boolean };
 const backgroundGuards = new Map<GameId, BackgroundGuard>();
+const managedGameSessions = new Set<GameId>();
 const splitRestoreProgress = new Map<GameId, cloudFs.SplitRestoreProgress>();
+let quitCleanupStarted = false;
+let quitCleanupFinished = false;
 
 function gameById(id: GameId): GameDefinition {
     const game = games.find((candidate) => candidate.id === id);
@@ -169,7 +172,7 @@ async function startBackgroundGuard(id: GameId) {
         if (guard.stopped) return;
         // Poll rapidement au démarrage puis ralentir pour limiter les requêtes système.
         const age = Date.now() - guard.startedAt;
-        const delay = age < 15_000 ? 120 : 550;
+        const delay = age < 15_000 ? 60 : 400;
         guard.timer = setTimeout(async () => {
             await tick();
             schedule();
@@ -179,6 +182,7 @@ async function startBackgroundGuard(id: GameId) {
     // Démarrer le guard avant le jeu pour capter sa première fenêtre.
     await tick();
     backgroundGuards.set(id, guard);
+    managedGameSessions.add(id);
     schedule();
 
     return { started: true, mode: guard.lastMode, affected: guard.affected, prepared: prepared.prepared };
@@ -358,6 +362,7 @@ function registerIpc() {
             const stopped = await steam.stopAppGracefully(game, install);
             return { ...stopped, cloudLogMarker };
         } finally {
+            managedGameSessions.delete(id);
             await stopBackgroundGuard(id);
         }
     });
@@ -591,9 +596,75 @@ function createWindow() {
     }
 }
 
-app.on('before-quit', () => {
-    for (const id of [...backgroundGuards.keys()]) void stopBackgroundGuard(id);
+async function shutdownManagedSession(id: GameId): Promise<void> {
+    const game = gameById(id);
+    const env = await getEnvironment();
+    const install = await steam.findInstalledApp(env.libraries, game.appId);
+
+    try {
+        if (await steam.isAppRunning(game, install)) {
+            const cloudRoot = game.getCloudRoot({
+                steamLibraries: env.libraries,
+                steamId64: env.steamId64,
+                installedLibrary: install.library
+            });
+
+            // A Cloud session can contain rebuilt >100 MiB files while it is open.
+            // Put the Steam-facing split representation back before stopping the
+            // game so closing VaporStow cannot leave the cloud in an unsafe state.
+            if (cloudRoot) {
+                try {
+                    await cloudFs.prepareSplitFilesForSync(
+                        cloudRoot,
+                        game.quotaBytes,
+                        game.maxFiles,
+                        splitCacheRoot(id)
+                    );
+                } catch (error) {
+                    console.error(`[VaporStow] Failed to prepare ${game.name} during app shutdown:`, error);
+                }
+            }
+
+            await steam.stopAppGracefully(game, install);
+        }
+    } finally {
+        managedGameSessions.delete(id);
+        await stopBackgroundGuard(id);
+    }
+}
+
+async function shutdownManagedSessions(): Promise<void> {
+    // Do this sequentially: Steam can serialize app shutdown/cloud work and the
+    // supported game list is intentionally tiny.
+    for (const id of [...managedGameSessions]) {
+        try {
+            await shutdownManagedSession(id);
+        } catch (error) {
+            console.error(`[VaporStow] Failed to stop managed game ${id}:`, error);
+        }
+    }
+}
+
+app.on('before-quit', (event) => {
+    if (quitCleanupFinished || managedGameSessions.size === 0) return;
+    event.preventDefault();
+    if (quitCleanupStarted) return;
+    quitCleanupStarted = true;
+
+    void shutdownManagedSessions().finally(() => {
+        quitCleanupFinished = true;
+        app.quit();
+    });
 });
+
+// In development, concurrently sends SIGTERM when the dev stack is stopped.
+// Route it through Electron's normal quit path so managed games are not orphaned.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+        if (app.isReady()) app.quit();
+        else process.exit(0);
+    });
+}
 
 app.whenReady().then(() => {
     registerIpc();

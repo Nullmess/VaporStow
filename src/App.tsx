@@ -818,6 +818,7 @@ export default function App() {
     }
 
     async function confirmOpen(game: GameStatus) {
+        let backgroundSessionStarted = false;
         try {
             setModal(null);
             await sleep(120);
@@ -848,6 +849,7 @@ export default function App() {
 
             setOperationDetail('Starting the game and restoring Steam Cloud…');
             await window.vaporApi.startBackgroundGuard(game.id);
+            backgroundSessionStarted = true;
             const currentGame = openingStatus.games.find((item) => item.id === game.id) || game;
             let synced = currentGame;
             if (!currentGame.running) {
@@ -946,7 +948,10 @@ export default function App() {
             setTransferProgress(null);
             setPhase('open');
         } catch (error) {
-            try { await window.vaporApi.stopBackgroundGuard(game.id); } catch {}
+            try {
+                if (backgroundSessionStarted) await window.vaporApi.requestStop(game.id);
+                else await window.vaporApi.stopBackgroundGuard(game.id);
+            } catch {}
             setOperationDetail(null);
             setTransferProgress(null);
             setPhase('closed');

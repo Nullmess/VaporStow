@@ -1257,6 +1257,11 @@ export async function listAuditDirectory(
 async function destinationDelta(source: string, destination: string): Promise<ImportPlan> {
     const sourceStat = await fsp.stat(source);
     if (!sourceStat.isFile()) throw new Error('Only regular files can be imported.');
+    try {
+        await fsp.access(source, fs.constants.R_OK);
+    } catch {
+        throw new Error(`Cannot read “${source}”. Check the source file permissions and try again.`);
+    }
 
     try {
         const destinationStat = await fsp.stat(destination);
@@ -1373,8 +1378,48 @@ export async function preflightDirectoryImport(
 async function copyFile(source: string, destination: string): Promise<void> {
     const stat = await fsp.stat(source);
     if (!stat.isFile()) throw new Error('Only regular files can be imported.');
-    await ensureDir(path.dirname(destination));
-    await fsp.copyFile(source, destination);
+    try {
+        await fsp.access(source, fs.constants.R_OK);
+    } catch {
+        throw new Error(`Cannot read “${source}”. Check the source file permissions and try again.`);
+    }
+
+    const parent = path.dirname(destination);
+    await ensureDir(parent);
+
+    // Do not overwrite the destination in-place. Git pack files and other
+    // imported assets can legitimately be read-only; retrying an import would
+    // then fail with EACCES when copyFile tries to truncate that existing file.
+    // Copy to a fresh sibling and replace the directory entry atomically instead.
+    const temporary = path.join(
+        parent,
+        `.${path.basename(destination)}.vaporstow-${process.pid}-${crypto.randomUUID()}.tmp`
+    );
+
+    try {
+        await fsp.copyFile(source, temporary);
+
+        // Keep the source permission bits where the platform supports them.
+        // The replacement itself does not require the old destination to be writable.
+        if (process.platform !== 'win32') {
+            await fsp.chmod(temporary, stat.mode & 0o777).catch(() => undefined);
+        }
+
+        try {
+            await fsp.rename(temporary, destination);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (process.platform !== 'win32' || !['EACCES', 'EPERM', 'EEXIST'].includes(code || '')) throw error;
+
+            // Windows can reject rename-over-existing. Remove the old entry and
+            // retry; chmod helps with files carrying a read-only attribute.
+            await fsp.chmod(destination, 0o666).catch(() => undefined);
+            await fsp.rm(destination, { force: true });
+            await fsp.rename(temporary, destination);
+        }
+    } finally {
+        await fsp.rm(temporary, { force: true }).catch(() => undefined);
+    }
 }
 
 export async function importFiles(

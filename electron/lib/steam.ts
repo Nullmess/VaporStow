@@ -339,7 +339,24 @@ function processMatches(game: GameDefinition, install: InstallInfo, processInfo:
     const hints = [...game.processHints];
     if (install.installDir) hints.push(install.installDir);
     const command = processInfo.command.toLowerCase();
-    return hints.some((hint) => hint && command.includes(hint.toLowerCase()));
+
+    if (hints.some((hint) => hint && command.includes(hint.toLowerCase()))) return true;
+
+    // Proton/Steam Linux launch wrappers do not always contain the game name,
+    // but they normally carry the app id in their command line. Matching those
+    // wrappers makes window hiding and shutdown reliable before the final game
+    // executable appears. Never classify Steam's own UI processes as the game.
+    const steamInfrastructure = /(^|[\s/])(steam|steam\.sh|steamwebhelper)(?=\s|$)/.test(command)
+        || command.includes('com.valvesoftware.steam');
+    if (steamInfrastructure) return false;
+
+    return [
+        `appid=${game.appId}`,
+        `appid ${game.appId}`,
+        `steamappid=${game.appId}`,
+        `steam_appid=${game.appId}`,
+        `steamgameid=${game.appId}`
+    ].some((marker) => command.includes(marker));
 }
 
 async function matchingProcesses(game: GameDefinition, install: InstallInfo): Promise<ProcessInfo[]> {
@@ -369,12 +386,25 @@ export async function isAppRunning(game: GameDefinition, install: InstallInfo): 
 
 async function commandAvailable(command: string): Promise<boolean> {
     if (process.platform === 'win32') return true;
-    try {
-        await execFileAsync('sh', ['-lc', `command -v ${command}`]);
-        return true;
-    } catch {
-        return false;
+
+    if (path.isAbsolute(command)) {
+        try {
+            await fsp.access(command, fs.constants.X_OK);
+            return true;
+        } catch {
+            return false;
+        }
     }
+
+    for (const directory of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+        try {
+            await fsp.access(path.join(directory, command), fs.constants.X_OK);
+            return true;
+        } catch {
+            // Continue searching the PATH.
+        }
+    }
+    return false;
 }
 
 function backgroundHints(game: GameDefinition, install: InstallInfo): string[] {
@@ -578,6 +608,56 @@ async function backgroundOnSway(game: GameDefinition, install: InstallInfo, pids
     }
 }
 
+type NiriWindow = {
+    id?: number;
+    pid?: number;
+    app_id?: string;
+    title?: string;
+    workspace_id?: number;
+};
+
+async function backgroundOnNiri(game: GameDefinition, install: InstallInfo, pids: number[]): Promise<number | null> {
+    if (!process.env.NIRI_SOCKET || !(await commandAvailable('niri'))) return null;
+
+    try {
+        const [{ stdout }, workspacesResult] = await Promise.all([
+            execFileAsync('niri', ['msg', '--json', 'windows'], { maxBuffer: 8 * 1024 * 1024 }),
+            execFileAsync('niri', ['msg', '--json', 'workspaces'], { maxBuffer: 4 * 1024 * 1024 }).catch(() => ({ stdout: '[]' }))
+        ]);
+        const windows = JSON.parse(stdout || '[]') as NiriWindow[];
+        const workspaces = JSON.parse(workspacesResult.stdout || '[]') as Array<{ id?: number; idx?: number }>;
+        const stashWorkspaceId = workspaces.find((workspace) => Number(workspace.idx) === 99)?.id ?? null;
+        let affected = 0;
+
+        for (const window of windows) {
+            if (!window.id) continue;
+            if (stashWorkspaceId !== null && Number(window.workspace_id) === Number(stashWorkspaceId)) continue;
+            const pidMatch = Boolean(window.pid && pids.includes(Number(window.pid)));
+            const metadataMatch = metadataMatchesGame(game, install, [window.app_id, window.title]);
+            if (!pidMatch && !metadataMatch) continue;
+
+            try {
+                // Niri has no built-in scratchpad. A high, non-focused dynamic
+                // workspace gives us the same background-session behaviour while
+                // keeping the user's current workspace and focus untouched.
+                await execFileAsync('niri', [
+                    'msg', 'action', 'move-window-to-workspace',
+                    '--window-id', String(window.id),
+                    '--focus', 'false',
+                    '99'
+                ], { maxBuffer: 1024 * 1024 });
+                affected += 1;
+            } catch {
+                // The window may have disappeared between enumeration and move.
+            }
+        }
+
+        return affected;
+    } catch {
+        return 0;
+    }
+}
+
 async function backgroundOnKdeWayland(pids: number[]): Promise<number> {
     // Utiliser kdotool sur KWin/Wayland lorsqu'il est déjà disponible.
     if (!(await commandAvailable('kdotool'))) return 0;
@@ -722,6 +802,9 @@ export async function backgroundApp(
 
     // Matcher les metadata du compositor pour couvrir wrappers et renderers.
     if (process.platform === 'linux') {
+        const niri = await backgroundOnNiri(game, install, pids);
+        if (niri !== null) return { mode: 'niri-background-workspace', affected: niri };
+
         const hypr = await backgroundOnHyprland(game, install, pids);
         if (hypr > 0) return { mode: 'hyprland-special-workspace', affected: hypr };
 
