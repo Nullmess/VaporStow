@@ -22,6 +22,7 @@ export type GameStatus = {
     nativeCloudSupport: boolean;
     protonExperimental: boolean;
     installed: boolean;
+    installing: boolean;
     installDir: string | null;
     installSize: number;
     running: boolean;

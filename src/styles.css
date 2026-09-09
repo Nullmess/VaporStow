@@ -100,7 +100,7 @@ header button, header a, header input {
 .steam.ok i, .status-dot.running {
     background: var(--green);
 }
-.steam.idle i, .status-dot.idle {
+.steam.idle i, .status-dot.idle, .status-dot.installing {
     background: var(--amber);
 }
 .steam.missing i, .status-dot.missing {
@@ -221,7 +221,7 @@ button:disabled {
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 0 14px;
+    padding: 0 10px;
     border-bottom: 1px solid var(--line);
 }
 .cloud-title {
@@ -938,4 +938,16 @@ button:disabled {
     color: #d6d7d4;
     font-size: 10px;
     cursor: pointer;
+}
+
+.cloud-topbar-main {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.cloud-back-button {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 14px;
 }

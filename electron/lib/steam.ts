@@ -12,6 +12,7 @@ type ProcessInfo = { pid: number; ppid: number; command: string };
 
 export type InstallInfo = {
     installed: boolean;
+    installing: boolean;
     library: string | null;
     manifest: string | null;
     installDir: string | null;
@@ -209,9 +210,19 @@ export async function findInstalledApp(libraries: string[], appId: string): Prom
             const text = await fsp.readFile(manifest, 'utf8');
             const installName = text.match(/"installdir"\s+"([^"]+)"/i)?.[1] || null;
             const size = Number(text.match(/"SizeOnDisk"\s+"(\d+)"/i)?.[1] || 0);
+            const rawStateFlags = text.match(/"StateFlags"\s+"(\d+)"/i)?.[1];
+            const stateFlags = rawStateFlags === undefined ? Number.NaN : Number(rawStateFlags);
+            const validStateFlags = Number.isFinite(stateFlags);
+
+            // Steam creates appmanifest_<appid>.acf as soon as an install starts.
+            // StateFlags=4 is the FullyInstalled bit; do not expose Open before that bit appears.
+            const fullyInstalled = validStateFlags ? (stateFlags & 4) !== 0 : true;
+            const activeInstallMask = 2 | 256 | 512 | 1024 | 65536 | 131072 | 262144 | 524288 | 1048576 | 2097152 | 4194304 | 8388608;
+            const installing = validStateFlags ? !fullyInstalled && (stateFlags & activeInstallMask) !== 0 : false;
 
             return {
-                installed: true,
+                installed: fullyInstalled,
+                installing,
                 library,
                 manifest,
                 installDir: installName ? path.join(library, 'steamapps', 'common', installName) : null,
@@ -224,6 +235,7 @@ export async function findInstalledApp(libraries: string[], appId: string): Prom
 
     return {
         installed: false,
+        installing: false,
         library: null,
         manifest: null,
         installDir: null,

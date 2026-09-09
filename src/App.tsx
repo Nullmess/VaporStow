@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type Rea
 import type { AppStatus, AuditEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
 
 type GameId = GameStatus['id'];
-type Phase = 'closed' | 'opening' | 'open' | 'saving' | 'saved';
+type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
 type NavDirection = 'forward' | 'back' | 'same';
 
 type ModalState =
     | null
+    | { kind: 'install'; game: GameStatus }
     | { kind: 'open'; game: GameStatus }
     | { kind: 'import'; game: GameStatus; directory: string }
     | { kind: 'folder'; game: GameStatus; directory: string }
@@ -71,6 +72,12 @@ function quotaLabel(bytes: number): string {
     return `${(bytes / GIB).toFixed(2)} GiB`;
 }
 
+function requiredSpaceLabel(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
+    if (bytes >= GIB) return `${(bytes / GIB).toFixed(2)} GiB`;
+    return formatBytes(bytes);
+}
+
 function remainingFileSlots(game: GameStatus, open: boolean): number | null {
     const used = open ? game.cloudFiles : game.rememberedFiles;
     return used === null ? null : Math.max(0, game.maxFiles - used);
@@ -79,18 +86,28 @@ function remainingFileSlots(game: GameStatus, open: boolean): number | null {
 function usageLabel(game: GameStatus, open: boolean): string {
     const current = open ? game.auditBytes : game.rememberedBytes;
     const remaining = remainingFileSlots(game, open);
-    const files = remaining === null ? '?' : remaining.toLocaleString();
-    return `${current === null ? '?' : formatBytes(current)} / ${quotaLabel(game.quotaBytes)} · ${files} files left`;
+
+    // Before the first Cloud session there is no remembered usage yet.
+    // Show the conservative limits instead of question marks.
+    if (!open && current === null && remaining === null) {
+        return `≤ ${quotaLabel(game.quotaBytes)} · ≤ ${game.maxFiles.toLocaleString()} files`;
+    }
+
+    const bytes = current === null ? 'Unknown' : `${formatBytes(current)} / ${quotaLabel(game.quotaBytes)}`;
+    const files = remaining === null ? 'Unknown files left' : `${remaining.toLocaleString()} files left`;
+    return `${bytes} · ${files}`;
 }
 
-function statusTone(game: GameStatus): 'missing' | 'idle' | 'running' {
+function statusTone(game: GameStatus): 'missing' | 'installing' | 'idle' | 'running' {
     if (game.running) return 'running';
+    if (game.installing) return 'installing';
     if (game.installed) return 'idle';
     return 'missing';
 }
 
 function operationTitle(phase: Phase, gameName: string): string {
     if (phase === 'opening') return `Opening ${gameName}`;
+    if (phase === 'closing') return 'Closing cloud session';
     if (phase === 'saving') return 'Synchronizing';
     return 'Cloud saved';
 }
@@ -111,6 +128,7 @@ function operationProgressSubtitle(
 
 function operationFallbackSubtitle(phase: Phase): string {
     if (phase === 'opening') return 'Steam is restoring the cloud locally.';
+    if (phase === 'closing') return 'Closing the hidden game and leaving the Cloud safely.';
     if (phase === 'saving') return 'Preparing local changes and synchronizing with Steam Cloud.';
     return 'The cloud is up to date.';
 }
@@ -278,7 +296,9 @@ function Explorer({
     synchronize,
     syncNotice,
     navDirection,
-    navKey
+    navKey,
+    leaveSession,
+    hasUnsynchronizedChanges
 }: {
     game: GameStatus;
     listing: DirectoryListing;
@@ -290,6 +310,8 @@ function Explorer({
     syncNotice: string | null;
     navDirection: NavDirection;
     navKey: number;
+    leaveSession: (game: GameStatus) => Promise<void>;
+    hasUnsynchronizedChanges: boolean;
 }) {
     const directory = normalizeRelative(listing.directory);
     const fileSlots = remainingFileSlots(game, true);
@@ -321,10 +343,20 @@ function Explorer({
     return (
         <section className="cloud-view">
             <div className="cloud-topbar">
-                <div className="cloud-title">
-                    <span className="status-dot running" />
-                    <strong>{game.name}</strong>
-                    <small>{usageLabel(game, true)}</small>
+                <div className="cloud-topbar-main">
+                    <button
+                        className="icon-button cloud-back-button"
+                        aria-label="Back to games"
+                        title={hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to games'}
+                        onClick={() => void leaveSession(game)}
+                    >
+                        ←
+                    </button>
+                    <div className="cloud-title">
+                        <span className="status-dot running" />
+                        <strong>{game.name}</strong>
+                        <small>{usageLabel(game, true)}</small>
+                    </div>
                 </div>
                 <button className="save-button" onClick={() => void synchronize(game)}>Synchronize</button>
             </div>
@@ -446,13 +478,15 @@ function Modal({
     close,
     refresh,
     reloadDirectory,
-    confirmOpen
+    confirmOpen,
+    onMutation
 }: {
     modal: ModalState;
     close: () => void;
     refresh: () => Promise<AppStatus>;
     reloadDirectory: (id: GameId, directory: string) => Promise<void>;
     confirmOpen: (game: GameStatus) => Promise<void>;
+    onMutation: () => void;
 }) {
     const [value, setValue] = useState('');
     const [visibleModal, setVisibleModal] = useState<ModalState>(modal);
@@ -480,11 +514,23 @@ function Modal({
 
     if (!visibleModal) return null;
 
-    async function run(action: () => Promise<unknown>, game?: GameStatus, directory?: string) {
+    async function run(
+        action: () => Promise<unknown>,
+        game?: GameStatus,
+        directory?: string,
+        marksSessionDirty = false
+    ) {
         if (working) return;
         setWorking(true);
         try {
-            await action();
+            const result = await action();
+            const canceled = Boolean(
+                result
+                && typeof result === 'object'
+                && 'canceled' in result
+                && (result as { canceled?: boolean }).canceled
+            );
+            if (marksSessionDirty && !canceled) onMutation();
             close();
             await refresh();
             if (game && directory !== undefined) await reloadDirectory(game.id, directory);
@@ -501,7 +547,42 @@ function Modal({
     const active = visibleModal;
     let content: ReactNode;
 
-    if (active.kind === 'open') {
+    if (active.kind === 'install') {
+        const game = active.game;
+        const cloudUnknown = game.rememberedBytes === null;
+        const rememberedCloud = game.rememberedBytes ?? game.quotaBytes;
+        const gameSize = Math.max(0, game.installSize);
+        const totalRequired = gameSize + rememberedCloud;
+
+        content = (
+            <>
+                <h3>Install {game.name}</h3>
+                <p className="modal-copy">
+                    Steam installs the game separately from its Cloud data. Keep enough local space for both before continuing.
+                </p>
+                <p className="modal-copy subtle">
+                    {cloudUnknown
+                        ? `Cloud usage is unknown. VaporStow reserves the full ${quotaLabel(game.quotaBytes)} quota.`
+                        : `Last remembered Cloud usage: ${formatBytes(rememberedCloud)}.`}
+                </p>
+                <div className="space-check">
+                    <span>Game size</span><strong>{requiredSpaceLabel(gameSize)}</strong>
+                    <span>Cloud reserve</span><strong>{requiredSpaceLabel(rememberedCloud)}</strong>
+                    <span>Total required</span><strong>{requiredSpaceLabel(totalRequired)}</strong>
+                </div>
+                <div className="modal-actions">
+                    <button onClick={requestClose}>Cancel</button>
+                    <button
+                        className="primary"
+                        disabled={working}
+                        onClick={() => void run(() => window.vaporApi.installGame(game.id))}
+                    >
+                        {working ? 'Opening Steam…' : 'Install'}
+                    </button>
+                </div>
+            </>
+        );
+    } else if (active.kind === 'open') {
         const game = active.game;
         const firstOpen = game.rememberedBytes === null;
         const required = firstOpen ? game.quotaBytes : game.rememberedBytes || 0;
@@ -547,10 +628,10 @@ function Modal({
                 </div>
                 {noSlots && <p className="modal-copy warning-copy">No new file slots remain. Replacing an existing file is allowed, but any import that adds a new file will be blocked.</p>}
                 <div className="choice-row">
-                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFiles(active.game.id, active.directory), active.game, active.directory)}>
+                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFiles(active.game.id, active.directory), active.game, active.directory, true)}>
                         {working ? 'Importing…' : 'Files'}
                     </button>
-                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFolder(active.game.id, active.directory), active.game, active.directory)}>
+                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFolder(active.game.id, active.directory), active.game, active.directory, true)}>
                         {working ? 'Importing…' : 'Folder'}
                     </button>
                 </div>
@@ -568,7 +649,8 @@ function Modal({
                     void run(
                         () => window.vaporApi.createFolder(active.game.id, active.directory, value),
                         active.game,
-                        active.directory
+                        active.directory,
+                        true
                     );
                 }}
             >
@@ -608,7 +690,7 @@ function Modal({
                     <button onClick={requestClose}>Cancel</button>
                     <button
                         className="danger"
-                        onClick={() => void run(() => window.vaporApi.deleteEntry(active.game.id, active.entry.path), active.game, parent)}
+                        onClick={() => void run(() => window.vaporApi.deleteEntry(active.game.id, active.entry.path), active.game, parent, true)}
                     >
                         Delete
                     </button>
@@ -647,6 +729,7 @@ export default function App() {
     const [syncNotice, setSyncNotice] = useState<string | null>(null);
     const [operationDetail, setOperationDetail] = useState<string | null>(null);
     const [transferProgress, setTransferProgress] = useState<CloudTransferProgress | null>(null);
+    const [sessionDirty, setSessionDirty] = useState(false);
 
     const refresh = useCallback(async (): Promise<AppStatus> => {
         const next = await window.vaporApi.getStatus();
@@ -744,6 +827,7 @@ export default function App() {
             setSelected(null);
             setNavDirection('same');
             setSyncNotice(null);
+            setSessionDirty(false);
             setNavKey((value) => value + 1);
 
             // Sérialiser Steam, jeu, rebuild puis explorer sous la même animation.
@@ -899,10 +983,83 @@ export default function App() {
         setSyncNotice(null);
         setOperationDetail(null);
         setTransferProgress(null);
+        setSessionDirty(false);
         setPhase('closed');
         setListing({ directory: '', entries: [] });
         setNavDirection('same');
         setNavKey((value) => value + 1);
+    }
+
+    async function leaveCloudSession(game: GameStatus) {
+        if (sessionDirty) {
+            setModal({
+                kind: 'message',
+                title: 'Unsynchronized changes',
+                body: 'Synchronize your Cloud changes before going back to the game list.'
+            });
+            return;
+        }
+
+        let stopStarted = false;
+
+        try {
+            setSelected(null);
+            setSyncNotice(null);
+            setTransferProgress(null);
+            setOperationDetail('Preparing the Cloud for a safe close…');
+            setPhase('closing');
+
+            // Opening the Cloud may reconstruct split files into their normal form.
+            // Rebuild the exact Steam-facing representation before closing, even when
+            // the user did not edit anything. This is a no-op for ordinary files.
+            const preparation = await window.vaporApi.prepareSync(game.id);
+            if (preparation.splitFiles > 0) {
+                setOperationDetail(
+                    preparation.reusedParts > 0
+                        ? `Cloud representation restored · ${preparation.reusedParts} cached parts reused`
+                        : 'Cloud representation restored.'
+                );
+                await sleep(180);
+            }
+
+            setOperationDetail('Closing the hidden game…');
+            await window.vaporApi.requestStop(game.id);
+            stopStarted = true;
+            await waitForRunning(game.id, false);
+
+            const afterClose = await window.vaporApi.getStatus();
+            setStatus(afterClose);
+            const closedState = afterClose.games.find((item) => item.id === game.id);
+            if (closedState) {
+                await window.vaporApi.rememberUsage(game.id, closedState.auditBytes, closedState.cloudFiles);
+            }
+
+            closeCloudSession();
+            await refresh();
+        } catch (error) {
+            if (!stopStarted) {
+                await restoreSplitFilesSafe(game.id);
+                try {
+                    await refresh();
+                    await reloadDirectory(game.id, listing.directory);
+                    setActiveGameId(game.id);
+                    setPhase('open');
+                } catch {
+                    closeCloudSession();
+                }
+            } else {
+                closeCloudSession();
+                await refresh();
+            }
+
+            setOperationDetail(null);
+            setTransferProgress(null);
+            setModal({
+                kind: 'message',
+                title: 'Unable to close cloud session',
+                body: error instanceof Error ? error.message : String(error)
+            });
+        }
     }
 
     async function synchronize(game: GameStatus) {
@@ -1052,11 +1209,13 @@ export default function App() {
                             {status.games.map((game, index) => {
                                 const actionLabel = !game.platformSupported
                                     ? 'Store'
-                                    : !game.installed
-                                        ? 'Install'
-                                        : !game.cloudRoot
-                                            ? 'Unavailable'
-                                            : 'Open';
+                                    : game.installing
+                                        ? 'Installing…'
+                                        : !game.installed
+                                            ? 'Install'
+                                            : !game.cloudRoot
+                                                ? 'Unavailable'
+                                                : 'Open';
 
                                 return (
                                     <div className="volume-row" key={game.id} style={{ '--row-index': index } as CSSProperties}>
@@ -1066,10 +1225,10 @@ export default function App() {
                                         </div>
                                         <span className="volume-usage">{usageLabel(game, false)}</span>
                                         <button
-                                            disabled={actionLabel === 'Unavailable'}
+                                            disabled={actionLabel === 'Unavailable' || game.installing}
                                             onClick={() => {
                                                 if (!game.platformSupported) void window.vaporApi.openStore(game.id);
-                                                else if (!game.installed) void window.vaporApi.installGame(game.id);
+                                                else if (!game.installed) setModal({ kind: 'install', game });
                                                 else setModal({ kind: 'open', game });
                                             }}
                                         >
@@ -1092,6 +1251,8 @@ export default function App() {
                                 syncNotice={syncNotice}
                                 navDirection={navDirection}
                                 navKey={navKey}
+                                leaveSession={leaveCloudSession}
+                                hasUnsynchronizedChanges={sessionDirty}
                             />
                         ) : (
                             <Operation phase={phase} gameName={activeGame.name} detail={operationDetail} progress={transferProgress} />
@@ -1108,6 +1269,7 @@ export default function App() {
                 refresh={refresh}
                 reloadDirectory={reloadDirectory}
                 confirmOpen={confirmOpen}
+                onMutation={() => setSessionDirty(true)}
             />
         </>
     );

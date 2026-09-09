@@ -15,6 +15,8 @@ export type GameDefinition = {
     name: string;
     volumeName: string;
     quotaBytes: number;
+    // Conservative Steam storage requirement used when no local appmanifest exists.
+    installSizeFallbackBytes: number;
     maxFiles: number;
     cloudPattern: string;
     platforms: NodeJS.Platform[];
@@ -28,6 +30,7 @@ export type GameDefinition = {
     getCloudRoot: (ctx: CloudContext) => string | null;
 };
 
+const GIB = 1024 ** 3;
 const LARGE_QUOTA = 100_000_000_000;
 
 function asteroidCloudRoot(): string {
@@ -90,6 +93,7 @@ export const games: GameDefinition[] = [
         name: 'Asteroid',
         volumeName: 'Orbit',
         quotaBytes: LARGE_QUOTA,
+        installSizeFallbackBytes: 1 * GIB,
         maxFiles: 10_000,
         cloudPattern: '* · recursive',
         platforms: ['win32', 'darwin', 'linux'],
@@ -107,6 +111,7 @@ export const games: GameDefinition[] = [
         name: 'World of Shooting',
         volumeName: 'Range',
         quotaBytes: LARGE_QUOTA,
+        installSizeFallbackBytes: 20 * GIB,
         maxFiles: 10_000,
         cloudPattern: '*.* · recursive · CustomLevels',
         platforms: ['win32', 'linux'],
