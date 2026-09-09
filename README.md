@@ -52,7 +52,7 @@
 
 VaporStow development uses **Node.js 22.x**.
 
-### Normal workflow
+### Normal workflows
 
 ```shell
 fnm use 22
