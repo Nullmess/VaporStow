@@ -108,27 +108,9 @@ npm run clean
 
 ---
 
-## ⚖️ Disclaimer and Intended Use
+## ⚖️ Disclaimer
 
-VaporStow is an independent open-source project and is not affiliated with,
-endorsed by, or sponsored by Valve Corporation or Steam.
-
-VaporStow manages files through Steam Cloud locations associated with supported
-games and relies on Steam's own synchronization mechanisms.
-
-VaporStow operates within the storage quotas, file limits, and synchronization
-mechanisms provided by Steam and supported games. It does not modify Steam,
-Steam Cloud quotas, or Steam authentication data.
-
-Users are responsible for ensuring that files managed with VaporStow comply
-with applicable Steam policies, game-specific requirements, and applicable
-laws.
-
-The authors are not responsible for misuse of the software or for content
-stored, uploaded, downloaded, or synchronized by users.
-
-The software is provided "as is", without warranty of any kind, as described
-in the MIT License.
+VaporStow is an independent open-source project, not affiliated with Valve or Steam. Users are responsible for complying with Valve/Steam terms and applicable laws. We are not responsible for misuse or user-managed content.
 
 ---
 
