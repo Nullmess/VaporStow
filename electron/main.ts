@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { games, type GameDefinition, type GameId } from './config/games';
 import * as cloudFs from './lib/cloudFs';
+import * as cloudIndex from './lib/cloudIndex';
 import * as steam from './lib/steam';
 
 let mainWindow: BrowserWindow | null = null;
@@ -92,8 +93,12 @@ type BackgroundGuard = { timer: NodeJS.Timeout; busy: boolean; lastMode: string;
 const backgroundGuards = new Map<GameId, BackgroundGuard>();
 const managedGameSessions = new Set<GameId>();
 const splitRestoreProgress = new Map<GameId, cloudFs.SplitRestoreProgress>();
+const pendingIndexSnapshots = new Map<GameId, cloudIndex.CloudIndexSnapshot>();
 let quitCleanupStarted = false;
 let quitCleanupFinished = false;
+let rendererClosePending = false;
+let rendererCloseApproved = false;
+let rendererQuitRequested = false;
 
 function gameById(id: GameId): GameDefinition {
     const game = games.find((candidate) => candidate.id === id);
@@ -377,6 +382,21 @@ function registerIpc() {
         );
     });
 
+    ipcMain.handle('cloud:content-summary', async (_event, id: GameId) => {
+        const { status } = await requireRunningGame(id);
+        return cloudFs.cloudContentSummary(status.cloudRoot!);
+    });
+
+    ipcMain.handle('cloud:prune-empty-directories', async (_event, id: GameId) => {
+        const game = gameById(id);
+        const env = await getEnvironment();
+        const status = await gameStatus(game, env, await readUsageMemory());
+        if (!status.cloudRoot) {
+            throw new Error('No local Auto-Cloud path is available for this game on the current platform.');
+        }
+        return cloudFs.pruneEmptyAuditDirectories(status.cloudRoot);
+    });
+
     ipcMain.handle('cloud:restore-split-files', async (_event, id: GameId) => {
         const { status } = await requireRunningGame(id);
         splitRestoreProgress.delete(id);
@@ -435,6 +455,37 @@ function registerIpc() {
         if (!Number.isFinite(files) || files < 0) throw new Error('Invalid file-count value.');
         await writeUsageMemory(id, bytes, files);
         return true;
+    });
+
+    ipcMain.handle('cloud:index-search', async (_event, query: string, limit?: number) => {
+        return cloudIndex.search(typeof query === 'string' ? query : '', limit);
+    });
+
+    ipcMain.handle('cloud:index-rebuild', async (_event, id: GameId) => {
+        const { game, status } = await requireRunningGame(id);
+        pendingIndexSnapshots.delete(id);
+        return cloudIndex.rebuildGame(game, status.cloudRoot!);
+    });
+
+    ipcMain.handle('cloud:index-stage', async (_event, id: GameId) => {
+        const { game, status } = await requireRunningGame(id);
+        const snapshot = await cloudIndex.snapshotGame(game, status.cloudRoot!);
+        pendingIndexSnapshots.set(id, snapshot);
+        return snapshot.entries.length;
+    });
+
+    ipcMain.handle('cloud:index-commit', async (_event, id: GameId) => {
+        gameById(id);
+        const snapshot = pendingIndexSnapshots.get(id);
+        if (!snapshot) throw new Error('No staged Cloud index is available.');
+        cloudIndex.commitSnapshot(snapshot);
+        pendingIndexSnapshots.delete(id);
+        return snapshot.entries.length;
+    });
+
+    ipcMain.handle('cloud:index-discard', async (_event, id: GameId) => {
+        gameById(id);
+        return pendingIndexSnapshots.delete(id);
     });
 
     ipcMain.handle('cloud:list-directory', async (_event, id: GameId, relativeDirectory: string) => {
@@ -540,11 +591,46 @@ function registerIpc() {
         const env = await getEnvironment();
         return steam.recentCloudLog(env.steamRoot, game.appId, 120);
     });
+
+    ipcMain.on('app:close-ready', () => {
+        rendererClosePending = false;
+        rendererCloseApproved = true;
+
+        if (rendererQuitRequested) {
+            app.quit();
+            return;
+        }
+
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    });
+
+    ipcMain.on('app:close-cancel', () => {
+        rendererClosePending = false;
+        rendererQuitRequested = false;
+    });
+}
+
+function requestRendererClose(quitApp: boolean): void {
+    if (quitApp) rendererQuitRequested = true;
+    if (rendererClosePending) return;
+
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+        rendererCloseApproved = true;
+        if (rendererQuitRequested) app.quit();
+        return;
+    }
+
+    rendererClosePending = true;
+    mainWindow.webContents.send('app:close-request');
 }
 
 // Fenêtre Electron principale.
 
 function createWindow() {
+    rendererClosePending = false;
+    rendererCloseApproved = false;
+    rendererQuitRequested = false;
+
     // Fixer la fenêtre selon la work area pour rester compatible avec les écrans 768p.
     const workArea = screen.getPrimaryDisplay().workAreaSize;
     const width = Math.min(
@@ -587,6 +673,11 @@ function createWindow() {
     mainWindow.setFullScreenable(false);
     mainWindow.setMenuBarVisibility(false);
     mainWindow.once('ready-to-show', () => mainWindow?.show());
+    mainWindow.on('close', (event) => {
+        if (rendererCloseApproved) return;
+        event.preventDefault();
+        requestRendererClose(false);
+    });
 
     const devServer = process.env.VITE_DEV_SERVER_URL;
     if (devServer) {
@@ -646,6 +737,17 @@ async function shutdownManagedSessions(): Promise<void> {
 }
 
 app.on('before-quit', (event) => {
+    if (rendererCloseApproved) return;
+
+    // Avec une session Cloud active, laisser le renderer exécuter le chemin
+    // Synchronize complet (upload Steam + commit de l'index) avant de quitter.
+    if (managedGameSessions.size > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        event.preventDefault();
+        requestRendererClose(true);
+        return;
+    }
+
+    // Fallback sans renderer (arrêt anormal/dev) : ne jamais laisser un jeu géré orphelin.
     if (quitCleanupFinished || managedGameSessions.size === 0) return;
     event.preventDefault();
     if (quitCleanupStarted) return;
@@ -653,6 +755,7 @@ app.on('before-quit', (event) => {
 
     void shutdownManagedSessions().finally(() => {
         quitCleanupFinished = true;
+        rendererCloseApproved = true;
         app.quit();
     });
 });
@@ -667,12 +770,17 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 app.whenReady().then(() => {
+    cloudIndex.initialize();
     registerIpc();
     createWindow();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+});
+
+app.on('will-quit', () => {
+    cloudIndex.close();
 });
 
 app.on('window-all-closed', () => {

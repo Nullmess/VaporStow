@@ -1481,6 +1481,81 @@ export async function deleteEntry(cloudRoot: string, relativePath: string): Prom
     await fsp.rm(target, { recursive: true, force: true });
 }
 
+export type CloudContentSummary = {
+    files: number;
+    directories: number;
+    onlyEmptyDirectories: boolean;
+};
+
+export async function cloudContentSummary(cloudRoot: string): Promise<CloudContentSummary> {
+    const root = auditRoot(cloudRoot);
+    let files = 0;
+    let directories = 0;
+
+    async function walk(target: string): Promise<void> {
+        let entries: fs.Dirent[];
+        try {
+            entries = await fsp.readdir(target, { withFileTypes: true });
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+            throw error;
+        }
+
+        for (const entry of entries) {
+            const child = path.join(target, entry.name);
+            if (entry.isDirectory()) {
+                directories += 1;
+                await walk(child);
+            } else if (entry.isFile()) {
+                files += 1;
+            }
+        }
+    }
+
+    await walk(root);
+    return {
+        files,
+        directories,
+        onlyEmptyDirectories: files === 0 && directories > 0
+    };
+}
+
+export async function pruneEmptyAuditDirectories(cloudRoot: string): Promise<{ removed: number }> {
+    const root = auditRoot(cloudRoot);
+    let removed = 0;
+
+    async function prune(target: string, keep: boolean): Promise<boolean> {
+        let entries: fs.Dirent[];
+        try {
+            entries = await fsp.readdir(target, { withFileTypes: true });
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+            throw error;
+        }
+
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            await prune(path.join(target, entry.name), false);
+        }
+
+        const remaining = await fsp.readdir(target).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return [];
+            throw error;
+        });
+
+        if (!keep && remaining.length === 0) {
+            await fsp.rmdir(target);
+            removed += 1;
+            return true;
+        }
+
+        return remaining.length === 0;
+    }
+
+    await prune(root, true);
+    return { removed };
+}
+
 export function resolveAuditDirectory(cloudRoot: string, relativeDirectory = ''): string {
     return safeAuditPath(cloudRoot, relativeDirectory);
 }

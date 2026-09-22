@@ -10,6 +10,18 @@ export type DirectoryListing = {
     entries: AuditEntry[];
 };
 
+export type CloudSearchEntry = {
+    gameId: 'asteroid' | 'world-of-shooting';
+    gameName: string;
+    volumeName: string;
+    path: string;
+    parentPath: string;
+    name: string;
+    type: 'file' | 'directory';
+    size: number;
+    cachedAt: string;
+};
+
 export type GameStatus = {
     id: 'asteroid' | 'world-of-shooting';
     appId: string;
@@ -126,6 +138,12 @@ export type PrepareSyncResult = {
     chunkBytes: number;
 };
 
+export type CloudContentSummary = {
+    files: number;
+    directories: number;
+    onlyEmptyDirectories: boolean;
+};
+
 export type RestoreSplitResult = {
     restoredFiles: number;
     detected: boolean;
@@ -155,9 +173,16 @@ export type VaporApi = {
     ) => Promise<CloudTransferProgress>;
     waitForCloudSync: (id: GameStatus['id'], marker: number) => Promise<CloudSyncResult>;
     prepareSync: (id: GameStatus['id']) => Promise<PrepareSyncResult>;
+    getCloudContentSummary: (id: GameStatus['id']) => Promise<CloudContentSummary>;
+    pruneEmptyDirectories: (id: GameStatus['id']) => Promise<{ removed: number }>;
     restoreSplitFiles: (id: GameStatus['id']) => Promise<RestoreSplitResult>;
     getRestoreProgress: (id: GameStatus['id']) => Promise<SplitRestoreProgress | null>;
     rememberUsage: (id: GameStatus['id'], bytes: number, files: number) => Promise<boolean>;
+    searchCloudIndex: (query: string, limit?: number) => Promise<CloudSearchEntry[]>;
+    rebuildCloudIndex: (id: GameStatus['id']) => Promise<number>;
+    stageCloudIndex: (id: GameStatus['id']) => Promise<number>;
+    commitCloudIndex: (id: GameStatus['id']) => Promise<number>;
+    discardCloudIndex: (id: GameStatus['id']) => Promise<boolean>;
     listDirectory: (id: GameStatus['id'], relativeDirectory: string) => Promise<DirectoryListing>;
     importFiles: (id: GameStatus['id'], relativeDirectory: string) => Promise<{ canceled: boolean }>;
     importFolder: (id: GameStatus['id'], relativeDirectory: string) => Promise<{ canceled: boolean }>;
@@ -166,4 +191,7 @@ export type VaporApi = {
     openFolder: (id: GameStatus['id'], relativeDirectory: string) => Promise<boolean>;
     revealEntry: (id: GameStatus['id'], relativePath: string) => Promise<boolean>;
     getLogs: (id: GameStatus['id']) => Promise<string[]>;
+    onWindowCloseRequested: (callback: () => void) => () => void;
+    confirmWindowClose: () => void;
+    cancelWindowClose: () => void;
 };

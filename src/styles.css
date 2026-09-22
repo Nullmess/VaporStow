@@ -171,7 +171,7 @@ header button, header a, header input {
 }
 
 .volume-row > button,
-.explorer-actions button,
+.cloud-topbar-actions button,
 .save-button,
 .icon-button,
 .modal button,
@@ -186,7 +186,7 @@ header button, header a, header input {
     transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
 }
 .volume-row > button:hover:not(:disabled),
-.explorer-actions button:hover:not(:disabled),
+.cloud-topbar-actions button:hover:not(:disabled),
 .save-button:hover:not(:disabled),
 .icon-button:hover:not(:disabled),
 .modal button:hover:not(:disabled),
@@ -216,13 +216,15 @@ button:disabled {
     animation: cloud-open .36s var(--motion) both;
 }
 .cloud-topbar {
-    flex: 0 0 58px;
+    flex: 0 0 46px;
+    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 18px;
-    padding: 0 10px;
+    gap: 12px;
+    padding: 0 8px;
     border-bottom: 1px solid var(--line);
+    background: #0c0d0f;
 }
 .cloud-title {
     min-width: 0;
@@ -249,6 +251,53 @@ button:disabled {
     background: #17191c;
     color: #ececea;
 }
+
+.cloud-topbar-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.cloud-topbar-actions button {
+    min-height: 29px;
+    padding: 0 10px;
+    background: transparent;
+}
+.cloud-topbar-actions .cloud-action-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+.cloud-topbar-actions .cloud-action-label svg {
+    flex: 0 0 auto;
+    display: block;
+    color: #858990;
+}
+.cloud-topbar-actions .cloud-action-icon {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+    color: #858990;
+    font-size: 16px;
+    line-height: 1;
+}
+.cloud-topbar-actions .cloud-action-icon svg {
+    display: block;
+}
+.cloud-topbar-actions .save-button {
+    padding: 0 12px;
+    background: #17191c;
+    color: #ececea;
+}
+.icon-button {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    background: transparent;
+}
 .sync-notice {
     flex: 0 0 auto;
     padding: 7px 12px;
@@ -263,87 +312,6 @@ button:disabled {
     animation: folder-fade .18s ease-out both;
 }
 
-.explorer-bar {
-    flex: 0 0 48px;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line-soft);
-    background: #0c0d0f;
-}
-.path-side {
-    min-width: 0;
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    overflow: hidden;
-}
-.icon-button {
-    width: 30px;
-    min-width: 30px;
-    padding: 0;
-    background: transparent;
-}
-.breadcrumbs {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    overflow: hidden;
-    white-space: nowrap;
-}
-.breadcrumbs span {
-    min-width: 0;
-    display: inline-flex;
-    align-items: center;
-}
-.breadcrumbs i {
-    margin: 0 3px;
-    color: #41444a;
-    font-size: 10px;
-    font-style: normal;
-}
-.breadcrumbs button {
-    overflow: hidden;
-    max-width: 150px;
-    padding: 2px 3px;
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    cursor: pointer;
-}
-.breadcrumbs button:hover {
-    color: var(--text);
-}
-.explorer-actions {
-    flex: 0 0 auto;
-    display: flex;
-    gap: 6px;
-}
-.explorer-actions button {
-    min-height: 27px;
-    padding: 0 9px;
-    background: transparent;
-}
-.explorer-actions .explorer-location-button {
-    width: 29px;
-    min-width: 29px;
-    padding: 0;
-    display: inline-grid;
-    place-items: center;
-    color: #777b81;
-}
-.explorer-actions .explorer-location-button svg {
-    display: block;
-}
-.explorer-actions .explorer-location-button:hover:not(:disabled) {
-    color: var(--text);
-}
 
 /* Seul le contenu Cloud scroll ; le viewport de l'application reste fixe. */
 .file-table {
@@ -363,7 +331,9 @@ button:disabled {
     display: none;
 }
 .file-list-motion {
+    position: relative;
     min-height: 100%;
+    height: 100%;
     will-change: opacity, transform;
 }
 .file-list-motion.forward {
@@ -450,11 +420,14 @@ button:disabled {
     display: block;
 }
 .empty-folder {
-    min-height: 100%;
+    position: absolute;
+    inset: 0;
     display: grid;
     place-items: center;
+    text-align: center;
     color: #484b50;
     font-size: 10px;
+    pointer-events: none;
 }
 .cloud-footer {
     flex: 0 0 34px;
@@ -950,4 +923,218 @@ button:disabled {
     flex: 0 0 auto;
     color: var(--muted);
     font-size: 14px;
+}
+
+/* Recherche globale du dernier aperçu Steam Cloud mis en cache. */
+header {
+    position: relative;
+}
+.cloud-search-trigger {
+    position: absolute;
+    left: 50%;
+    width: clamp(190px, 34vw, 310px);
+    min-height: 27px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border: 1px solid #25282d;
+    border-radius: 4px;
+    background: #0e1012;
+    color: #656970;
+    font-size: 9px;
+    text-align: left;
+    cursor: pointer;
+    transform: translateX(-50%);
+    transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.cloud-search-trigger span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.cloud-search-trigger:hover {
+    border-color: #353940;
+    background: #121417;
+    color: #a4a6aa;
+}
+.cloud-search-trigger:active:not(:disabled) {
+    transform: translateX(-50%) translateY(1px);
+}
+.cloud-search-trigger svg {
+    flex: 0 0 auto;
+}
+
+.search-backdrop {
+    padding: 28px;
+}
+.search-modal {
+    width: min(840px, calc(100% - 16px));
+    height: min(540px, calc(100% - 24px));
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #101113;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+    animation: modal-in .22s var(--motion) both;
+}
+.search-modal.closing {
+    animation: modal-out .15s ease-in both;
+}
+.search-modal-input-wrap {
+    flex: 0 0 46px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 13px;
+    border-bottom: 1px solid var(--line);
+    color: #6d7177;
+    background: #0d0f11;
+}
+.search-modal-input-wrap input {
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+}
+.search-modal-input-wrap input::placeholder {
+    color: #555960;
+}
+.search-modal-input-wrap > span {
+    flex: 0 0 auto;
+    padding: 2px 5px;
+    border: 1px solid #292c31;
+    border-radius: 3px;
+    color: #5e6268;
+    font-size: 8px;
+}
+.search-results {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: #35383e transparent;
+}
+.search-results::-webkit-scrollbar {
+    width: 7px;
+}
+.search-results::-webkit-scrollbar-track {
+    background: transparent;
+}
+.search-results::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: #35383e;
+}
+.search-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+    padding: 12px;
+}
+.search-result {
+    min-width: 0;
+    min-height: 118px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 13px 12px 11px;
+    overflow: hidden;
+    border: 1px solid #1d2024;
+    border-radius: 4px;
+    background: #0d0f11;
+    color: #bfc0bd;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .14s ease, background .14s ease, color .14s ease, transform .14s ease;
+}
+.search-result:hover,
+.search-result:focus-visible {
+    border-color: #35393f;
+    background: #15171a;
+    color: var(--text);
+}
+.search-result:active:not(:disabled) {
+    transform: translateY(1px);
+}
+.search-result-icon {
+    height: 30px;
+    display: grid;
+    place-items: center;
+    margin-bottom: 8px;
+    color: #686c72;
+}
+.search-result strong,
+.search-result small {
+    width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.search-result strong {
+    color: inherit;
+    font-size: 10px;
+    font-weight: 550;
+    text-align: center;
+}
+.search-result-size {
+    margin-top: 4px;
+    color: #555960;
+    font-size: 8px;
+    text-align: center;
+}
+.search-result-hover-meta {
+    position: absolute;
+    top: 12px;
+    right: 10px;
+    max-width: calc(100% - 20px);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .12s ease;
+}
+.search-result-cloud {
+    min-width: 0;
+    max-width: 88px;
+    overflow: hidden;
+    color: #74787f;
+    font-size: 8px;
+    line-height: 1;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.search-result-open {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    color: #74787f;
+}
+.search-result:hover .search-result-hover-meta,
+.search-result:focus-visible .search-result-hover-meta {
+    opacity: 1;
+}
+
+.search-state {
+    min-height: 100%;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    color: #5d6167;
+    font-size: 10px;
+    text-align: center;
+    line-height: 1.5;
 }

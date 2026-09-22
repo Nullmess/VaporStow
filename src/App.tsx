@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import type { AppStatus, AuditEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import type { AppStatus, AuditEntry, CloudSearchEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
 
 type GameId = GameStatus['id'];
 type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
@@ -8,13 +8,15 @@ type NavDirection = 'forward' | 'back' | 'same';
 type ModalState =
     | null
     | { kind: 'install'; game: GameStatus }
-    | { kind: 'open'; game: GameStatus }
+    | { kind: 'open'; game: GameStatus; target?: CloudSearchEntry }
     | { kind: 'import'; game: GameStatus; directory: string }
     | { kind: 'folder'; game: GameStatus; directory: string }
     | { kind: 'delete'; game: GameStatus; entry: AuditEntry }
+    | { kind: 'empty-folders-sync'; game: GameStatus }
     | { kind: 'message'; title: string; body: string };
 
 const GIB = 1024 ** 3;
+const AFK_TIMEOUT_MS = 10 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -143,6 +145,124 @@ async function restoreSplitFilesSafe(id: GameId): Promise<void> {
 
 // Composants UI locaux.
 
+function SearchIcon({ size = 12 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            aria-hidden="true"
+        >
+            <circle cx="11" cy="11" r="6" />
+            <path d="M16 16l4 4" />
+        </svg>
+    );
+}
+
+function FolderIcon({ size = 24 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M3.5 7.5h6l1.8 2H20.5v8.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z" />
+            <path d="M3.5 7.5V6A1.5 1.5 0 0 1 5 4.5h4l1.7 2H19" />
+        </svg>
+    );
+}
+
+function FileIcon({ size = 24 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M6 3.5h7l5 5V20.5H6z" />
+            <path d="M13 3.5v5h5" />
+        </svg>
+    );
+}
+
+
+function ImportIcon({ size = 14 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.55"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M3.5 8h6l1.8 2H20.5v8a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z" />
+            <path d="M12 4v9" />
+            <path d="m8.8 9.8 3.2 3.2 3.2-3.2" />
+        </svg>
+    );
+}
+
+function NewFolderIcon({ size = 15 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M3.5 7.5h6l1.8 2H20.5v8.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z" />
+            <path d="M15 12v5" />
+            <path d="M12.5 14.5h5" />
+        </svg>
+    );
+}
+
+function SynchronizeIcon({ size = 14 }: { size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.55"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M19 8a7.5 7.5 0 0 0-12.7-2.2L4 8" />
+            <path d="M4 4v4h4" />
+            <path d="M5 16a7.5 7.5 0 0 0 12.7 2.2L20 16" />
+            <path d="M20 20v-4h-4" />
+        </svg>
+    );
+}
+
 function OpenLocationIcon({ size = 14 }: { size?: number }) {
     return (
         <svg
@@ -160,6 +280,107 @@ function OpenLocationIcon({ size = 14 }: { size?: number }) {
             <path d="M19 5l-8 8" />
             <path d="M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5" />
         </svg>
+    );
+}
+
+function SearchModal({
+    close,
+    openEntry
+}: {
+    close: () => void;
+    openEntry: (entry: CloudSearchEntry) => void;
+}) {
+    const [query, setQuery] = useState('');
+    const [results, setResults] = useState<CloudSearchEntry[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [closing, setClosing] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const timer = window.setTimeout(() => {
+            setLoading(true);
+            void window.vaporApi.searchCloudIndex(query, 120)
+                .then((entries) => {
+                    if (!cancelled) setResults(entries);
+                })
+                .catch(() => {
+                    if (!cancelled) setResults([]);
+                })
+                .finally(() => {
+                    if (!cancelled) setLoading(false);
+                });
+        }, query ? 70 : 0);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [query]);
+
+    const requestClose = useCallback(() => {
+        if (closing) return;
+        setClosing(true);
+        window.setTimeout(close, 150);
+    }, [close, closing]);
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') requestClose();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [requestClose]);
+
+    return (
+        <div className={`modal-backdrop search-backdrop ${closing ? 'closing' : ''}`} onMouseDown={requestClose}>
+            <section className={`search-modal ${closing ? 'closing' : ''}`} onMouseDown={(event) => event.stopPropagation()}>
+                <div className="search-modal-input-wrap">
+                    <SearchIcon size={13} />
+                    <input
+                        autoFocus
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder="Search Cloud…"
+                        aria-label="Search cached Steam Cloud files and folders"
+                    />
+                    <span>Esc</span>
+                </div>
+
+                <div className="search-results" aria-live="polite">
+                    {loading ? (
+                        <div className="search-state">Searching…</div>
+                    ) : results.length === 0 ? (
+                        <div className="search-state">
+                            {query ? 'No cached item matches this search.' : 'No cached Cloud data yet. Open a supported Cloud once to index it.'}
+                        </div>
+                    ) : (
+                        <div className="search-grid">
+                            {results.map((entry) => (
+                                <button
+                                    key={`${entry.gameId}:${entry.path}`}
+                                    className="search-result"
+                                    title={`${entry.path}
+${entry.gameName} · ${entry.volumeName}`}
+                                    onClick={() => openEntry(entry)}
+                                >
+                                    <span className="search-result-icon">
+                                        {entry.type === 'directory' ? <FolderIcon /> : <FileIcon />}
+                                    </span>
+                                    <strong>{entry.name}</strong>
+                                    <small className="search-result-size">
+                                        {entry.type === 'file' ? formatBytes(entry.size) : 'Folder'}
+                                    </small>
+                                    <span className="search-result-hover-meta" aria-hidden="true">
+                                        <span className="search-result-cloud">{entry.gameName}</span>
+                                        <span className="search-result-open"><OpenLocationIcon size={12} /></span>
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
+        </div>
     );
 }
 
@@ -256,7 +477,7 @@ function Operation({
                     {showIdleWarning && (
                         <div className="transfer-idle">No new Steam data for {formatIdle(idleSeconds!)}</div>
                     )}
-                    {currentFile && phase !== 'saved' && (
+                    {currentFile && (
                         <div className="transfer-current" title={progress?.currentFile || currentFile}>
                             {currentFile}
                         </div>
@@ -267,22 +488,24 @@ function Operation({
     );
 }
 
-function Breadcrumbs({ directory, onNavigate }: { directory: string; onNavigate: (path: string) => void }) {
-    const parts = normalizeRelative(directory).split('/').filter(Boolean);
-
+function TrashIcon({ size = 14 }: { size?: number }) {
     return (
-        <nav className="breadcrumbs" aria-label="Current folder">
-            <button onClick={() => onNavigate('')}>Cloud</button>
-            {parts.map((part, index) => {
-                const target = parts.slice(0, index + 1).join('/');
-                return (
-                    <span key={target}>
-                        <i>/</i>
-                        <button onClick={() => onNavigate(target)}>{part}</button>
-                    </span>
-                );
-            })}
-        </nav>
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M4 7h16" />
+            <path d="M9 7V4h6v3" />
+            <path d="M7 7l1 13h8l1-13" />
+            <path d="M10 11v5M14 11v5" />
+        </svg>
     );
 }
 
@@ -306,26 +529,22 @@ function Explorer({
     setSelected: (entry: AuditEntry | null) => void;
     navigate: (directory: string) => Promise<void>;
     setModal: (modal: ModalState) => void;
-    synchronize: (game: GameStatus) => Promise<void>;
+    synchronize: (game: GameStatus) => Promise<boolean>;
     syncNotice: string | null;
     navDirection: NavDirection;
     navKey: number;
-    leaveSession: (game: GameStatus) => Promise<void>;
+    leaveSession: (game: GameStatus) => Promise<boolean>;
     hasUnsynchronizedChanges: boolean;
 }) {
     const directory = normalizeRelative(listing.directory);
     const fileSlots = remainingFileSlots(game, true);
 
-    async function openSystemFolder() {
-        try {
-            await window.vaporApi.openFolder(game.id, directory);
-        } catch (error) {
-            setModal({
-                kind: 'message',
-                title: 'Unable to open folder',
-                body: error instanceof Error ? error.message : String(error)
-            });
+    async function goBack() {
+        if (directory) {
+            await navigate(parentDirectory(directory));
+            return;
         }
+        await leaveSession(game);
     }
 
     async function revealEntry(entry: AuditEntry) {
@@ -346,77 +565,55 @@ function Explorer({
                 <div className="cloud-topbar-main">
                     <button
                         className="icon-button cloud-back-button"
-                        aria-label="Back to games"
-                        title={hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to games'}
-                        onClick={() => void leaveSession(game)}
+                        aria-label={directory ? 'Parent folder' : 'Back to games'}
+                        title={directory ? 'Parent folder' : (hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to games')}
+                        onClick={() => void goBack()}
                     >
                         ←
                     </button>
                     <div className="cloud-title">
                         <span className="status-dot running" />
                         <strong>{game.name}</strong>
-                        <small>{usageLabel(game, true)}</small>
                     </div>
                 </div>
-                <button className="save-button" onClick={() => void synchronize(game)}>Synchronize</button>
+
+                <div className="cloud-topbar-actions">
+                    <button
+                        className="cloud-action-label"
+                        title={fileSlots === 0 ? 'No new file slots remain; replacing existing files is still possible' : 'Import files or a folder'}
+                        onClick={() => setModal({ kind: 'import', game, directory })}
+                    >
+                        <ImportIcon />
+                        <span>Import</span>
+                    </button>
+                    <button
+                        className="cloud-action-icon"
+                        aria-label="New folder"
+                        title="New folder"
+                        onClick={() => setModal({ kind: 'folder', game, directory })}
+                    >
+                        <NewFolderIcon />
+                    </button>
+                    <button
+                        className="cloud-action-icon"
+                        aria-label="Delete selected item"
+                        title={selected ? `Delete ${selected.name}` : 'Select a file or folder to delete'}
+                        disabled={!selected}
+                        onClick={() => selected && setModal({ kind: 'delete', game, entry: selected })}
+                    >
+                        <TrashIcon />
+                    </button>
+                    <button className="save-button cloud-action-label" onClick={() => void synchronize(game)}>
+                        <SynchronizeIcon />
+                        <span>Synchronize</span>
+                    </button>
+                </div>
             </div>
 
             {syncNotice && <div className="sync-notice" role="status">{syncNotice}</div>}
 
-            <div className="explorer-bar">
-                <div className="path-side">
-                    <button
-                        className="icon-button"
-                        aria-label="Parent folder"
-                        title="Parent folder"
-                        disabled={!directory}
-                        onClick={() => void navigate(parentDirectory(directory))}
-                    >
-                        ←
-                    </button>
-                    <Breadcrumbs directory={directory} onNavigate={(target) => void navigate(target)} />
-                </div>
-
-                <div className="explorer-actions">
-                    <button
-                        title={fileSlots === 0 ? 'No new file slots remain; replacing existing files is still possible' : 'Import files or a folder'}
-                        onClick={() => setModal({ kind: 'import', game, directory })}
-                    >
-                        Import
-                    </button>
-                    <button onClick={() => setModal({ kind: 'folder', game, directory })}>New folder</button>
-                    <button
-                        className="explorer-location-button"
-                        onClick={() => void openSystemFolder()}
-                        title="Open current folder in the system file manager"
-                        aria-label="Open current folder in the system file manager"
-                    >
-                        <OpenLocationIcon />
-                    </button>
-                    <button
-                        disabled={!selected}
-                        onClick={() => selected && setModal({ kind: 'delete', game, entry: selected })}
-                    >
-                        Delete
-                    </button>
-                </div>
-            </div>
-
             <div className="file-table" role="listbox" aria-label={`${game.name} cloud files`}>
                 <div key={`${listing.directory}-${navKey}`} className={`file-list-motion ${navDirection}`}>
-                    {directory && (
-                        <button
-                            className="file-row parent-row"
-                            onDoubleClick={() => void navigate(parentDirectory(directory))}
-                            onClick={() => void navigate(parentDirectory(directory))}
-                        >
-                            <span className="file-icon">↰</span>
-                            <span className="file-name">..</span>
-                            <span />
-                            <span />
-                        </button>
-                    )}
-
                     {listing.entries.length === 0 ? (
                         <div className="empty-folder">This folder is empty</div>
                     ) : listing.entries.map((entry) => {
@@ -479,13 +676,15 @@ function Modal({
     refresh,
     reloadDirectory,
     confirmOpen,
+    confirmEmptyFoldersSync,
     onMutation
 }: {
     modal: ModalState;
     close: () => void;
     refresh: () => Promise<AppStatus>;
     reloadDirectory: (id: GameId, directory: string) => Promise<void>;
-    confirmOpen: (game: GameStatus) => Promise<void>;
+    confirmOpen: (game: GameStatus, target?: CloudSearchEntry) => Promise<void>;
+    confirmEmptyFoldersSync: (game: GameStatus) => Promise<boolean>;
     onMutation: () => void;
 }) {
     const [value, setValue] = useState('');
@@ -604,6 +803,9 @@ function Modal({
                     <span>Required</span><strong>{formatBytes(required)}</strong>
                     <span>Available</span><strong>{available === null ? 'Unknown' : formatBytes(available)}</strong>
                 </div>
+                <p className="modal-copy warning-copy">
+                    The game may open. Leave it running in the background and do not close it. VaporStow will close it automatically when you synchronize.
+                </p>
                 {!enough && (
                     <div className="space-warning">
                         {available === null ? 'Local free space could not be verified.' : 'Not enough free local space.'}
@@ -611,7 +813,7 @@ function Modal({
                 )}
                 <div className="modal-actions">
                     <button onClick={requestClose}>Cancel</button>
-                    <button className="primary" disabled={!enough} onClick={() => void confirmOpen(game)}>Open</button>
+                    <button className="primary" disabled={!enough} onClick={() => void confirmOpen(game, active.target)}>Open</button>
                 </div>
             </>
         );
@@ -669,6 +871,27 @@ function Modal({
                     <button className="primary" type="submit" disabled={!value.trim()}>Create</button>
                 </div>
             </form>
+        );
+    } else if (active.kind === 'empty-folders-sync') {
+        content = (
+            <>
+                <h3>Empty folders won’t be saved</h3>
+                <p className="modal-copy">Steam Cloud only saves files. These empty folders will be removed locally after a successful synchronization.</p>
+                <div className="modal-actions">
+                    <button disabled={working} onClick={requestClose}>Cancel</button>
+                    <button
+                        className="primary"
+                        disabled={working}
+                        onClick={() => {
+                            if (working) return;
+                            setWorking(true);
+                            void confirmEmptyFoldersSync(active.game).finally(() => setWorking(false));
+                        }}
+                    >
+                        {working ? 'Synchronizing…' : 'Synchronize'}
+                    </button>
+                </div>
+            </>
         );
     } else if (active.kind === 'delete') {
         const parent = parentDirectory(active.entry.path);
@@ -730,6 +953,18 @@ export default function App() {
     const [operationDetail, setOperationDetail] = useState<string | null>(null);
     const [transferProgress, setTransferProgress] = useState<CloudTransferProgress | null>(null);
     const [sessionDirty, setSessionDirty] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const lastActivityAt = useRef(Date.now());
+    const automaticSessionActionRunning = useRef(false);
+    const windowCloseHandling = useRef(false);
+    const activeGameIdRef = useRef<GameId | null>(activeGameId);
+    const phaseRef = useRef<Phase>(phase);
+    const statusRef = useRef<AppStatus | null>(status);
+    const automaticSessionActionRef = useRef<() => Promise<boolean>>(async () => false);
+
+    activeGameIdRef.current = activeGameId;
+    phaseRef.current = phase;
+    statusRef.current = status;
 
     const refresh = useCallback(async (): Promise<AppStatus> => {
         const next = await window.vaporApi.getStatus();
@@ -817,7 +1052,7 @@ export default function App() {
         throw new Error('Steam did not finish the operation in time.');
     }
 
-    async function confirmOpen(game: GameStatus) {
+    async function confirmOpen(game: GameStatus, target?: CloudSearchEntry) {
         let backgroundSessionStarted = false;
         try {
             setModal(null);
@@ -941,8 +1176,40 @@ export default function App() {
             setStatus(restoredStatus);
             const restoredGame = restoredStatus.games.find((item) => item.id === game.id) || synced;
             await window.vaporApi.rememberUsage(game.id, restoredGame.auditBytes, restoredGame.cloudFiles);
+            await window.vaporApi.rebuildCloudIndex(game.id).catch(() => 0);
             await refresh();
-            await reloadDirectory(game.id, '');
+
+            const targetDirectory = target
+                ? normalizeRelative(target.type === 'directory' ? target.path : target.parentPath)
+                : '';
+
+            if (target) {
+                const targetListing = await window.vaporApi.listDirectory(game.id, targetDirectory);
+                const normalizedDirectory = normalizeRelative(targetListing.directory);
+                const normalizedEntries = targetListing.entries.map((entry) => ({
+                    ...entry,
+                    path: normalizeRelative(entry.path)
+                }));
+                const targetStillExists = target.type === 'directory'
+                    ? normalizedDirectory === targetDirectory
+                    : normalizedEntries.some((entry) => entry.type === 'file' && entry.path === normalizeRelative(target.path));
+
+                if (targetStillExists) {
+                    setListing({ directory: normalizedDirectory, entries: normalizedEntries });
+                    if (target.type === 'file') {
+                        const selectedEntry = normalizedEntries.find((entry) => entry.path === normalizeRelative(target.path));
+                        setSelected(selectedEntry || null);
+                    } else {
+                        setSelected(null);
+                    }
+                    setNavDirection('forward');
+                    setNavKey((value) => value + 1);
+                } else {
+                    await reloadDirectory(game.id, '');
+                }
+            } else {
+                await reloadDirectory(game.id, '');
+            }
             await sleep(320);
             setOperationDetail(null);
             setTransferProgress(null);
@@ -995,14 +1262,14 @@ export default function App() {
         setNavKey((value) => value + 1);
     }
 
-    async function leaveCloudSession(game: GameStatus) {
+    async function leaveCloudSession(game: GameStatus): Promise<boolean> {
         if (sessionDirty) {
             setModal({
                 kind: 'message',
                 title: 'Unsynchronized changes',
                 body: 'Synchronize your Cloud changes before going back to the game list.'
             });
-            return;
+            return false;
         }
 
         let stopStarted = false;
@@ -1041,6 +1308,7 @@ export default function App() {
 
             closeCloudSession();
             await refresh();
+            return true;
         } catch (error) {
             if (!stopStarted) {
                 await restoreSplitFilesSafe(game.id);
@@ -1064,11 +1332,24 @@ export default function App() {
                 title: 'Unable to close cloud session',
                 body: error instanceof Error ? error.message : String(error)
             });
+            return false;
         }
     }
 
-    async function synchronize(game: GameStatus) {
+    async function synchronize(
+        game: GameStatus,
+        options: { skipEmptyFoldersWarning?: boolean } = {}
+    ): Promise<boolean> {
+        if (!options.skipEmptyFoldersWarning) {
+            const summary = await window.vaporApi.getCloudContentSummary(game.id).catch(() => null);
+            if (summary?.onlyEmptyDirectories) {
+                setModal({ kind: 'empty-folders-sync', game });
+                return false;
+            }
+        }
+
         let stopStarted = false;
+        let indexStaged = false;
 
         try {
             setSelected(null);
@@ -1076,6 +1357,16 @@ export default function App() {
             setOperationDetail('Preparing files…');
             setTransferProgress(null);
             setPhase('saving');
+
+            // Capturer l'état user-facing avant que les gros fichiers soient replacés
+            // par leur représentation split destinée à Steam. Le snapshot reste en RAM
+            // et n'est commité dans SQLite qu'après confirmation de la sync.
+            try {
+                await window.vaporApi.stageCloudIndex(game.id);
+                indexStaged = true;
+            } catch {
+                indexStaged = false;
+            }
 
             // Préparer le split transactionnel avant la fermeture du jeu et la sync.
             const preparation = await window.vaporApi.prepareSync(game.id);
@@ -1126,6 +1417,7 @@ export default function App() {
             }
 
             if (syncResult.state !== 'complete') {
+                if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
                 closeCloudSession();
                 await refresh();
                 setModal({
@@ -1133,14 +1425,20 @@ export default function App() {
                     title: syncResult.state === 'failed' ? 'Steam Cloud sync failed' : 'Steam Cloud status unknown',
                     body: syncResult.message
                 });
-                return;
+                return false;
             }
+
+            // Steam Cloud ne conserve pas les dossiers vides. Les retirer seulement après
+            // une synchronisation réussie pour garder le miroir local cohérent sans perdre
+            // d'état local si l'upload échoue.
+            await window.vaporApi.pruneEmptyDirectories(game.id);
 
             // Garder localement la représentation split qui vient d'être synchronisée.
             const afterSync = await window.vaporApi.getStatus();
             setStatus(afterSync);
             const syncedState = afterSync.games.find((item) => item.id === game.id) || current;
             await window.vaporApi.rememberUsage(game.id, syncedState.auditBytes, syncedState.cloudFiles);
+            if (indexStaged) await window.vaporApi.commitCloudIndex(game.id).catch(() => 0);
 
             // Conserver le progress final pour l'animation puis vider le Cloud log.
             await window.vaporApi.resetCloudLog();
@@ -1151,7 +1449,10 @@ export default function App() {
 
             closeCloudSession();
             await refresh();
+            return true;
         } catch (error) {
+            if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
+
             // Restaurer les originaux si l'échec arrive avant la fermeture du jeu.
             if (!stopStarted) {
                 await restoreSplitFilesSafe(game.id);
@@ -1181,8 +1482,101 @@ export default function App() {
                 title: 'Synchronization interrupted',
                 body: error instanceof Error ? error.message : String(error)
             });
+            return false;
         }
     }
+
+    // Auto-sync utilise exactement le même chemin que le bouton Synchronize.
+    // Cela couvre aussi les modifications faites directement dans le dossier local
+    // même si elles n'ont pas été créées depuis l'UI de VaporStow.
+    automaticSessionActionRef.current = async () => {
+        const id = activeGameIdRef.current;
+        const currentStatus = statusRef.current;
+        if (!id || phaseRef.current !== 'open' || !currentStatus) return false;
+
+        const game = currentStatus.games.find((candidate) => candidate.id === id);
+        if (!game) return false;
+
+        setModal(null);
+        setSearchOpen(false);
+        return synchronize(game, { skipEmptyFoldersWarning: true });
+    };
+
+    useEffect(() => {
+        if (phase === 'open' && activeGameId) lastActivityAt.current = Date.now();
+    }, [phase, activeGameId]);
+
+    useEffect(() => {
+        const markActivity = () => {
+            lastActivityAt.current = Date.now();
+        };
+        const activityEvents: Array<keyof WindowEventMap> = [
+            'pointerdown',
+            'pointermove',
+            'keydown',
+            'wheel',
+            'touchstart'
+        ];
+
+        for (const eventName of activityEvents) {
+            window.addEventListener(eventName, markActivity, { passive: true });
+        }
+
+        const timer = window.setInterval(() => {
+            if (phaseRef.current !== 'open' || !activeGameIdRef.current) return;
+            if (automaticSessionActionRunning.current || windowCloseHandling.current) return;
+            if (Date.now() - lastActivityAt.current < AFK_TIMEOUT_MS) return;
+
+            // Réarmer immédiatement pour qu'un échec ne déclenche pas une boucle serrée.
+            lastActivityAt.current = Date.now();
+            automaticSessionActionRunning.current = true;
+            void automaticSessionActionRef.current().finally(() => {
+                automaticSessionActionRunning.current = false;
+                lastActivityAt.current = Date.now();
+            });
+        }, 1000);
+
+        return () => {
+            window.clearInterval(timer);
+            for (const eventName of activityEvents) {
+                window.removeEventListener(eventName, markActivity);
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        return window.vaporApi.onWindowCloseRequested(() => {
+            if (windowCloseHandling.current) return;
+            windowCloseHandling.current = true;
+
+            void (async () => {
+                let canClose = false;
+                try {
+                    // Si une ouverture/sauvegarde est déjà en cours, attendre son état
+                    // stable plutôt que de couper Steam au milieu d'une opération.
+                    while (true) {
+                        if (!activeGameIdRef.current && phaseRef.current === 'closed') {
+                            canClose = true;
+                            break;
+                        }
+
+                        if (phaseRef.current === 'open') {
+                            canClose = await automaticSessionActionRef.current();
+                            break;
+                        }
+
+                        await sleep(150);
+                    }
+                } catch {
+                    canClose = false;
+                }
+
+                if (canClose) window.vaporApi.confirmWindowClose();
+                else window.vaporApi.cancelWindowClose();
+                windowCloseHandling.current = false;
+            })();
+        });
+    }, []);
 
     if (loading || !status) return <main className="loading">VaporStow</main>;
 
@@ -1193,6 +1587,12 @@ export default function App() {
             <main className={`shell ${activeGameId ? 'focused' : ''}`}>
                 <header>
                     <div className="brand">VaporStow <span>v{status.appVersion}</span></div>
+                    {!activeGameId && (
+                        <button className="cloud-search-trigger" onClick={() => setSearchOpen(true)}>
+                            <SearchIcon />
+                            <span>Search Cloud…</span>
+                        </button>
+                    )}
                     <button
                         className={`steam ${!status.steamInstalled ? 'missing' : status.steamRunning ? 'ok' : 'idle'}`}
                         title={!status.steamInstalled ? 'Steam is not installed' : status.steamRunning ? 'Steam is running' : 'Steam is installed but not running'}
@@ -1268,12 +1668,37 @@ export default function App() {
                 </div>
             </main>
 
+            {searchOpen && !activeGameId && (
+                <SearchModal
+                    close={() => setSearchOpen(false)}
+                    openEntry={(entry) => {
+                        const game = status.games.find((candidate) => candidate.id === entry.gameId);
+                        setSearchOpen(false);
+                        if (!game) return;
+                        if (!game.platformSupported) {
+                            setModal({ kind: 'message', title: 'Cloud unavailable', body: `${game.name} is not supported on this platform.` });
+                        } else if (!game.installed) {
+                            setModal({ kind: 'install', game });
+                        } else if (!game.cloudRoot) {
+                            setModal({ kind: 'message', title: 'Cloud unavailable', body: 'No local Auto-Cloud path is available for this game on the current platform.' });
+                        } else {
+                            setModal({ kind: 'open', game, target: entry });
+                        }
+                    }}
+                />
+            )}
+
             <Modal
                 modal={modal}
                 close={() => setModal(null)}
                 refresh={refresh}
                 reloadDirectory={reloadDirectory}
                 confirmOpen={confirmOpen}
+                confirmEmptyFoldersSync={async (game) => {
+                    setModal(null);
+                    await sleep(120);
+                    return synchronize(game, { skipEmptyFoldersWarning: true });
+                }}
                 onMutation={() => setSessionDirty(true)}
             />
         </>

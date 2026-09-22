@@ -22,7 +22,7 @@
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
-    "clean": "rimraf dist dist-electron release node_modules coverage .cache .vite",
+    "clean": "rimraf dist dist-electron release node_modules coverage .cache .vite cloud-index.db cloud-index.db-journal",
     "build-win": "npm run build && electron-builder --win",
     "build-mac": "npm run build && electron-builder --mac",
     "build-lin": "npm run build && electron-builder --linux",
