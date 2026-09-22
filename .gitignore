@@ -1,1 +1,9 @@
-node_modules
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+.cache/
+.vite/
+cloud-index.db
+cloud-index.db-journal

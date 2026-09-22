@@ -786,27 +786,32 @@ function Modal({
         const firstOpen = game.rememberedBytes === null;
         const required = firstOpen ? game.quotaBytes : game.rememberedBytes || 0;
         const available = game.disk?.free ?? null;
-        const enough = game.running || (available !== null && available >= required);
+        const cloudFolderExists = game.cloudRootExists;
+        const enough = cloudFolderExists || game.running || (available !== null && available >= required);
 
         content = (
             <>
                 <h3>Open {game.name}</h3>
-                <p className="modal-copy">
-                    Make sure enough local space is available. Steam restores the complete cloud set before the game starts.
-                </p>
-                <p className="modal-copy subtle">
-                    {firstOpen
-                        ? `Current usage is unknown. VaporStow checks against the full ${quotaLabel(game.quotaBytes)} quota.`
-                        : `Last remembered usage: ${formatBytes(game.rememberedBytes || 0)} · ${remainingFileSlots(game, false)?.toLocaleString() ?? '?'} file slots left.`}
-                </p>
-                <div className="space-check">
-                    <span>Required</span><strong>{formatBytes(required)}</strong>
-                    <span>Available</span><strong>{available === null ? 'Unknown' : formatBytes(available)}</strong>
-                </div>
+                {!cloudFolderExists && (
+                    <>
+                        <p className="modal-copy">
+                            The local Cloud folder is missing. Steam will restore the Cloud files before the game starts.
+                        </p>
+                        <p className="modal-copy subtle">
+                            {firstOpen
+                                ? `Current usage is unknown. VaporStow checks against the full ${quotaLabel(game.quotaBytes)} quota.`
+                                : `Last remembered usage: ${formatBytes(game.rememberedBytes || 0)} · ${remainingFileSlots(game, false)?.toLocaleString() ?? '?'} file slots left.`}
+                        </p>
+                        <div className="space-check">
+                            <span>Required</span><strong>{formatBytes(required)}</strong>
+                            <span>Available</span><strong>{available === null ? 'Unknown' : formatBytes(available)}</strong>
+                        </div>
+                    </>
+                )}
                 <p className="modal-copy warning-copy">
                     The game may open. Leave it running in the background and do not close it. VaporStow will close it automatically when you synchronize.
                 </p>
-                {!enough && (
+                {!cloudFolderExists && !enough && (
                     <div className="space-warning">
                         {available === null ? 'Local free space could not be verified.' : 'Not enough free local space.'}
                     </div>

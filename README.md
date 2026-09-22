@@ -108,7 +108,7 @@ npm run clean
 
 ---
 
-## ⚖️ Disclaimer
+## ⚖️ Disclaimer and Intended Use
 
 VaporStow is an independent open-source project, not affiliated with Valve or Steam. Users are responsible for complying with Valve/Steam terms and applicable laws. We are not responsible for misuse or user-managed content.
 
