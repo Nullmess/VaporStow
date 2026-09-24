@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell, screen } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { games, type GameDefinition, type GameId } from './config/games';
+import { games, type GameDefinition, type GameId } from './games';
 import * as cloudFs from './lib/cloudFs';
 import * as cloudIndex from './lib/cloudIndex';
 import * as steam from './lib/steam';

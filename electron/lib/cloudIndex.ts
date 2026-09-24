@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { GameDefinition, GameId } from '../config/games';
+import type { GameDefinition, GameId } from '../games';
 import { auditRoot, SPLIT_STORAGE_FOLDER } from './cloudFs';
 
 export type CloudIndexEntryType = 'file' | 'directory';

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { GameDefinition } from '../config/games';
+import type { GameDefinition } from '../games';
 
 const execFileAsync = promisify(execFile);
 
