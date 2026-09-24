@@ -38,7 +38,7 @@
 - Steam Cloud upload and download progress
 - Transfer speed, ETA, and current-file tracking
 - Storage usage and available file-slot tracking
-- Automatic Steam detection, launch, and synchronization
+- Automatic Steam detection, launch, and synchronization across native, Flatpak and Snap installations
 - Open or reveal files in the system file manager
 
 ## 🎮 Supported Games

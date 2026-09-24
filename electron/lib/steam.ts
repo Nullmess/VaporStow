@@ -31,6 +31,30 @@ function uniquePaths(items: Array<string | null | undefined>): string[] {
     return [...new Set(items.filter(Boolean).map((item) => path.normalize(item as string)))];
 }
 
+function linuxSteamRootCandidates(home: string): string[] {
+    const xdgDataHome = process.env.XDG_DATA_HOME;
+
+    return uniquePaths([
+        xdgDataHome ? path.join(xdgDataHome, 'Steam') : null,
+        xdgDataHome ? path.join(xdgDataHome, 'steam') : null,
+        path.join(home, '.local', 'share', 'Steam'),
+        path.join(home, '.local', 'share', 'steam'),
+        path.join(home, '.steam', 'steam'),
+        path.join(home, '.steam', 'root'),
+        path.join(home, '.steam', 'debian-installation'),
+        path.join(home, '.steam'),
+        path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam'),
+        path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'steam'),
+        path.join(home, '.var', 'app', 'com.valvesoftware.Steam', 'data', 'Steam'),
+        path.join(home, '.var', 'app', 'com.valvesoftware.Steam', 'data', 'steam'),
+        path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.steam', 'steam'),
+        path.join(home, 'snap', 'steam', 'common', '.local', 'share', 'Steam'),
+        path.join(home, 'snap', 'steam', 'common', '.local', 'share', 'steam'),
+        path.join(home, 'snap', 'steam', 'common', '.steam', 'root'),
+        path.join(home, 'snap', 'steam', 'common', '.steam', 'steam')
+    ]);
+}
+
 async function windowsRegistrySteamPath(): Promise<string | null> {
     if (process.platform !== 'win32') return null;
 
@@ -50,7 +74,11 @@ async function windowsRegistrySteamPath(): Promise<string | null> {
 
 export async function detectSteamRoot(): Promise<string | null> {
     const home = os.homedir();
-    const candidates: Array<string | null | undefined> = [process.env.STEAM_DIR];
+    const candidates: Array<string | null | undefined> = [
+        process.env.STEAM_DIR,
+        process.env.STEAM_ROOT,
+        process.env.STEAM_HOME
+    ];
 
     if (process.platform === 'win32') {
         candidates.push(await windowsRegistrySteamPath());
@@ -61,13 +89,7 @@ export async function detectSteamRoot(): Promise<string | null> {
     } else if (process.platform === 'darwin') {
         candidates.push(path.join(home, 'Library', 'Application Support', 'Steam'));
     } else {
-        candidates.push(
-            path.join(home, '.local', 'share', 'Steam'),
-            path.join(home, '.steam', 'steam'),
-            path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam'),
-            path.join(home, 'snap', 'steam', 'common', '.local', 'share', 'Steam'),
-            path.join(home, 'snap', 'steam', 'common', '.steam', 'root')
-        );
+        candidates.push(...linuxSteamRootCandidates(home));
     }
 
     for (const candidate of uniquePaths(candidates)) {
@@ -919,13 +941,7 @@ export async function detectCloudLogPath(steamRoot: string | null): Promise<stri
     } else if (process.platform === 'darwin') {
         candidates.push(path.join(home, 'Library', 'Application Support', 'Steam', 'logs', 'cloud_log.txt'));
     } else {
-        candidates.push(
-            path.join(home, '.local', 'share', 'Steam', 'logs', 'cloud_log.txt'),
-            path.join(home, '.steam', 'steam', 'logs', 'cloud_log.txt'),
-            path.join(home, '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam', 'logs', 'cloud_log.txt'),
-            path.join(home, 'snap', 'steam', 'common', '.local', 'share', 'Steam', 'logs', 'cloud_log.txt'),
-            path.join(home, 'snap', 'steam', 'common', '.steam', 'root', 'logs', 'cloud_log.txt')
-        );
+        candidates.push(...linuxSteamRootCandidates(home).map((root) => path.join(root, 'logs', 'cloud_log.txt')));
     }
 
     const normalized = uniquePaths(candidates);
