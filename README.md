@@ -80,10 +80,22 @@ npm run build
 npm run build-win
 ```
 
+Output:
+
+```text
+release/VaporStow-windows-x64/
+```
+
 #### Linux
 
 ```shell
 npm run build-lin
+```
+
+Output:
+
+```text
+release/VaporStow-linux-x64/
 ```
 
 #### macOS
@@ -92,11 +104,19 @@ npm run build-lin
 npm run build-mac
 ```
 
+Output:
+
+```text
+release/VaporStow-macos-x64/
+```
+
 #### All targets
 
 ```shell
 npm run build-all
 ```
+
+Each platform is packaged into its own directory under `release/`.
 
 ### Clean
 

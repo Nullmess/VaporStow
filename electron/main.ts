@@ -655,7 +655,17 @@ function createWindow() {
             ? { titleBarOverlay: { color: '#0b0c0e', symbolColor: '#777a80', height: 34 } }
             : {}),
         title: 'VaporStow',
-        icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+        ...(process.platform !== 'darwin'
+            ? {
+                icon: path.join(
+                    __dirname,
+                    '..',
+                    'assets',
+                    'build',
+                    process.platform === 'win32' ? 'windows.ico' : 'linux.png'
+                )
+            }
+            : {}),
         show: false,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
