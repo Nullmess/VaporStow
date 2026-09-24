@@ -85,18 +85,18 @@
       "category": "Utility",
       "icon": "assets/build/linux",
       "artifactName": "VaporStow-${version}-linux-${arch}.${ext}",
-      "syncDesktopName": true,
       "desktop": {
         "entry": {
           "Name": "VaporStow",
           "Comment": "Steam Cloud file manager for supported games",
           "Categories": "Utility;",
           "Keywords": "steam;cloud;files;games;",
-          "StartupWMClass": "io.github.Nullmess.vaporstow",
+          "StartupWMClass": "VaporStow",
           "Terminal": false,
           "Type": "Application"
         }
-      }
+      },
+      "executableName": "VaporStow"
     }
   },
   "contributors": [
@@ -109,5 +109,5 @@
       "url": "https://github.com/Ybucaille"
     }
   ],
-  "desktopName": "io.github.Nullmess.vaporstow.desktop"
+  "desktopName": "VaporStow.desktop"
 }

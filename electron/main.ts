@@ -7,6 +7,9 @@ import * as cloudFs from './lib/cloudFs';
 import * as cloudIndex from './lib/cloudIndex';
 import * as steam from './lib/steam';
 
+// Aligner l'identité Linux avec le fichier VaporStow.desktop généré par electron-builder.
+if (process.platform === 'linux') app.setDesktopName('VaporStow.desktop');
+
 let mainWindow: BrowserWindow | null = null;
 
 async function spawnDetached(command: string, args: string[]): Promise<boolean> {
