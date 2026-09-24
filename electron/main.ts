@@ -662,7 +662,7 @@ function createWindow() {
                     '..',
                     'assets',
                     'build',
-                    process.platform === 'win32' ? 'windows.ico' : 'linux.png'
+                    process.platform === 'win32' ? 'windows.ico' : path.join('linux', '256x256.png')
                 )
             }
             : {}),
