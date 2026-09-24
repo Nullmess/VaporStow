@@ -5,3 +5,5 @@
 *.jpeg binary
 *.gif binary
 *.ico binary
+
+*.icns binary
