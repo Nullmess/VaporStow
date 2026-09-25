@@ -150,34 +150,34 @@ export async function launchSteamBackground(steamRoot: string | null): Promise<b
     return false;
 }
 
-export async function launchAppBackground(steamRoot: string | null, appId: string): Promise<boolean> {
+export async function launchAppBackground(steamRoot: string | null, appId: string, launchArgs: string[] = []): Promise<boolean> {
     type LaunchCandidate = { executable: string; args: string[] };
     const candidates: LaunchCandidate[] = [];
 
     if (process.platform === 'win32') {
-        if (steamRoot) candidates.push({ executable: path.join(steamRoot, 'steam.exe'), args: ['-silent', '-applaunch', appId] });
+        if (steamRoot) candidates.push({ executable: path.join(steamRoot, 'steam.exe'), args: ['-silent', '-applaunch', appId, ...launchArgs] });
     } else if (process.platform === 'darwin') {
         if (steamRoot) {
             candidates.push({
                 executable: path.join(steamRoot, 'Steam.AppBundle', 'Steam', 'Contents', 'MacOS', 'steam_osx'),
-                args: ['-silent', '-applaunch', appId]
+                args: ['-silent', '-applaunch', appId, ...launchArgs]
             });
         }
-        candidates.push({ executable: '/Applications/Steam.app/Contents/MacOS/steam_osx', args: ['-silent', '-applaunch', appId] });
+        candidates.push({ executable: '/Applications/Steam.app/Contents/MacOS/steam_osx', args: ['-silent', '-applaunch', appId, ...launchArgs] });
     } else {
         // Préférer le launcher cohérent avec le Steam root détecté.
         if (steamRoot?.includes(`${path.sep}.var${path.sep}app${path.sep}com.valvesoftware.Steam${path.sep}`)) {
-            candidates.push({ executable: 'flatpak', args: ['run', 'com.valvesoftware.Steam', '-silent', '-applaunch', appId] });
+            candidates.push({ executable: 'flatpak', args: ['run', 'com.valvesoftware.Steam', '-silent', '-applaunch', appId, ...launchArgs] });
         }
         if (steamRoot?.includes(`${path.sep}snap${path.sep}steam${path.sep}`)) {
-            candidates.push({ executable: 'snap', args: ['run', 'steam', '-silent', '-applaunch', appId] });
+            candidates.push({ executable: 'snap', args: ['run', 'steam', '-silent', '-applaunch', appId, ...launchArgs] });
         }
         if (steamRoot) {
-            candidates.push({ executable: path.join(steamRoot, 'steam.sh'), args: ['-silent', '-applaunch', appId] });
-            candidates.push({ executable: path.join(steamRoot, 'ubuntu12_32', 'steam'), args: ['-silent', '-applaunch', appId] });
+            candidates.push({ executable: path.join(steamRoot, 'steam.sh'), args: ['-silent', '-applaunch', appId, ...launchArgs] });
+            candidates.push({ executable: path.join(steamRoot, 'ubuntu12_32', 'steam'), args: ['-silent', '-applaunch', appId, ...launchArgs] });
         }
-        candidates.push({ executable: '/usr/bin/steam', args: ['-silent', '-applaunch', appId] });
-        candidates.push({ executable: '/usr/bin/steam-native', args: ['-silent', '-applaunch', appId] });
+        candidates.push({ executable: '/usr/bin/steam', args: ['-silent', '-applaunch', appId, ...launchArgs] });
+        candidates.push({ executable: '/usr/bin/steam-native', args: ['-silent', '-applaunch', appId, ...launchArgs] });
     }
 
     for (const candidate of candidates) {

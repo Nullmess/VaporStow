@@ -25,6 +25,7 @@ export type GameDefinition = {
     storeUrl: string;
     steamInstallUrl: string;
     steamRunUrl: string;
+    launchArgs?: string[];
     processHints: string[];
     windowHints: string[];
     getCloudRoot: (ctx: CloudContext) => string | null;
@@ -127,6 +128,7 @@ export const games: GameDefinition[] = [
         storeUrl: 'https://store.steampowered.com/app/1621860/NekoDice/',
         steamInstallUrl: 'steam://install/1621860',
         steamRunUrl: 'steam://run/1621860',
+        launchArgs: ['-batchmode'],
         processHints: ['NekoDice', 'NekoDice.exe'],
         windowHints: ['NekoDice'],
         getCloudRoot: nekoDiceCloudRoot

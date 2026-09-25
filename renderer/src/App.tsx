@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type CSSProperties } from 'react';
 import type { AppStatus, AuditEntry, CloudSearchEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
+import startupLogo from './assets/logo.png';
 
 type GameId = GameStatus['id'];
 type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
@@ -13,7 +14,17 @@ type ModalState =
     | { kind: 'folder'; game: GameStatus; directory: string }
     | { kind: 'delete'; game: GameStatus; entry: AuditEntry }
     | { kind: 'empty-folders-sync'; game: GameStatus }
+    | { kind: 'info' }
     | { kind: 'message'; title: string; body: string };
+
+type ExplorerSelection = AuditEntry | {
+    path: '__parent__';
+    name: '..';
+    type: 'directory';
+    size: 0;
+    virtualParent: true;
+    parentTarget: string;
+};
 
 const GIB = 1024 ** 3;
 const AFK_TIMEOUT_MS = 10 * 60 * 1000;
@@ -68,6 +79,12 @@ function formatIdle(seconds: number): string {
 function displayFileName(value: string): string {
     const normalized = value.replace(/\\/g, '/');
     return normalized.split('/').filter(Boolean).pop() || value;
+}
+
+function compactStatusLine(value: string, maxLength = 34): string {
+    const clean = value.replace(/^log>\s*/i, '').trim();
+    if (clean.length <= maxLength) return clean;
+    return `${clean.slice(0, Math.max(1, maxLength - 3)).trimEnd()}...`;
 }
 
 function quotaLabel(bytes: number): string {
@@ -163,6 +180,57 @@ function SearchIcon({ size = 12 }: { size?: number }) {
         >
             <circle cx="11" cy="11" r="6" />
             <path d="M16 16l4 4" />
+        </svg>
+    );
+}
+
+function InfoIcon({ size = 14 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M12 10v6" />
+            <path d="M12 7.2h.01" />
+        </svg>
+    );
+}
+
+function GithubIcon({ size = 15 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2C6.477 2 2 6.58 2 12.229c0 4.518 2.865 8.35 6.839 9.703.5.095.682-.22.682-.49 0-.242-.009-.883-.014-1.733-2.782.617-3.369-1.37-3.369-1.37-.455-1.18-1.11-1.494-1.11-1.494-.908-.635.069-.622.069-.622 1.004.072 1.532 1.054 1.532 1.054.892 1.562 2.341 1.111 2.91.85.091-.661.349-1.112.635-1.368-2.221-.259-4.555-1.136-4.555-5.056 0-1.117.39-2.031 1.029-2.747-.103-.259-.446-1.301.098-2.712 0 0 .84-.275 2.75 1.05A9.39 9.39 0 0 1 12 7.05a9.39 9.39 0 0 1 2.504.344c1.909-1.325 2.748-1.05 2.748-1.05.546 1.411.203 2.453.1 2.712.64.716 1.028 1.63 1.028 2.747 0 3.93-2.338 4.794-4.566 5.048.359.316.679.94.679 1.895 0 1.368-.012 2.472-.012 2.808 0 .272.18.59.688.49C19.14 20.575 22 16.746 22 12.229 22 6.58 17.523 2 12 2Z" />
+        </svg>
+    );
+}
+
+function FullscreenIcon({ active = false, size = 14 }: { active?: boolean; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {active ? (
+                <>
+                    <path d="M9 4v5H4" /><path d="M15 4v5h5" /><path d="M9 20v-5H4" /><path d="M15 20v-5h5" />
+                </>
+            ) : (
+                <>
+                    <path d="M8 4H4v4" /><path d="M16 4h4v4" /><path d="M8 20H4v-4" /><path d="M16 20h4v-4" />
+                </>
+            )}
+        </svg>
+    );
+}
+
+function CloseIcon({ size = 14 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+            <path d="m6 6 12 12" /><path d="M18 6 6 18" />
+        </svg>
+    );
+}
+
+function BackIcon({ size = 16 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m14.5 5-7 7 7 7" />
+            <path d="M8 12h10" />
         </svg>
     );
 }
@@ -388,110 +456,6 @@ ${entry.gameName} · ${entry.volumeName}`}
     );
 }
 
-function Operation({
-    phase,
-    gameName,
-    detail,
-    progress
-}: {
-    phase: Phase;
-    gameName: string;
-    detail?: string | null;
-    progress?: CloudTransferProgress | null;
-}) {
-    if (phase === 'closed' || phase === 'open') return null;
-
-    const title = operationTitle(phase, gameName);
-    const isSplitRestore = Boolean(
-        phase === 'opening'
-        && progress
-        && progress.direction === 'unknown'
-        && (progress.totalParts ?? 0) > 0
-    );
-    const idleSeconds = progress?.idleSeconds ?? null;
-    const progressSubtitle = operationProgressSubtitle(phase, progress, isSplitRestore);
-    const subtitle = progressSubtitle || detail || operationFallbackSubtitle(phase);
-
-    const determinate = phase !== 'saved' && progress?.percent !== null && progress?.percent !== undefined;
-    const percent = determinate ? Math.max(0, Math.min(100, progress!.percent!)) : null;
-    const mainStats: string[] = [];
-    const detailStats: string[] = [];
-    const speedStats: string[] = [];
-
-    if (progress && phase !== 'saved') {
-        if (percent !== null) mainStats.push(`${Math.round(percent)}%`);
-        if (progress.totalBytes !== null && progress.totalBytes > 0) {
-            mainStats.push(`${formatBytes(progress.transferredBytes)} / ${formatBytes(progress.totalBytes)}`);
-        }
-
-        if (isSplitRestore) {
-            const total = progress.currentFileTotalParts && progress.currentFileTotalParts > 0
-                ? progress.currentFileTotalParts
-                : (progress.totalParts ?? 0);
-            const ready = Math.max(0, Math.min(total, progress.currentFileReceivedParts ?? progress.receivedParts ?? 0));
-            const rebuilt = Math.max(0, Math.min(total, progress.currentFileCompletedParts ?? progress.completedParts ?? 0));
-            const waiting = Math.max(0, total - ready);
-
-            if (total > 0) {
-                if (ready === rebuilt) detailStats.push(`${ready} / ${total} parts`);
-                else detailStats.push(`${ready} ready · ${rebuilt} rebuilt`);
-                if (waiting > 0) detailStats.push(`${waiting} waiting`);
-            }
-        } else if (progress.totalFiles !== null && progress.totalFiles > 1) {
-            // Ne pas dupliquer le nombre de fichiers restants.
-            detailStats.push(`${progress.completedFiles} / ${progress.totalFiles} files`);
-        }
-
-        if (progress.speedBytesPerSecond !== null && progress.speedBytesPerSecond > 0) {
-            speedStats.push(`${formatBytes(progress.speedBytesPerSecond)}/s`);
-        }
-        if (progress.etaSeconds !== null && progress.etaSeconds >= 0) {
-            speedStats.push(formatEta(progress.etaSeconds));
-        }
-    }
-
-    const currentFile = progress?.currentFile ? displayFileName(progress.currentFile) : null;
-    const showIdleWarning = Boolean(isSplitRestore && progress?.state === 'waiting' && idleSeconds !== null && idleSeconds >= 10);
-
-    return (
-        <section className={`operation-screen ${phase}`}>
-            <div className="sync-orbit" aria-hidden="true"><span /></div>
-            <strong>{title}</strong>
-            <p>{subtitle}</p>
-            {phase !== 'saved' && (
-                <>
-                    <div
-                        className={`operation-progress ${determinate ? 'determinate' : ''}`}
-                        role="progressbar"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={percent === null ? undefined : Math.round(percent)}
-                    >
-                        <span style={percent === null ? undefined : { width: `${percent}%` }} />
-                    </div>
-                    {mainStats.length > 0 && (
-                        <div className="transfer-stats transfer-main" aria-live="polite">{mainStats.join(' · ')}</div>
-                    )}
-                    {detailStats.length > 0 && (
-                        <div className="transfer-stats transfer-detail">{detailStats.join(' · ')}</div>
-                    )}
-                    {speedStats.length > 0 && (
-                        <div className="transfer-stats transfer-speed">{speedStats.join(' · ')}</div>
-                    )}
-                    {showIdleWarning && (
-                        <div className="transfer-idle">No new Steam data for {formatIdle(idleSeconds!)}</div>
-                    )}
-                    {currentFile && (
-                        <div className="transfer-current" title={progress?.currentFile || currentFile}>
-                            {currentFile}
-                        </div>
-                    )}
-                </>
-            )}
-        </section>
-    );
-}
-
 function TrashIcon({ size = 14 }: { size?: number }) {
     return (
         <svg
@@ -529,8 +493,8 @@ function Explorer({
 }: {
     game: GameStatus;
     listing: DirectoryListing;
-    selected: AuditEntry | null;
-    setSelected: (entry: AuditEntry | null) => void;
+    selected: ExplorerSelection | null;
+    setSelected: (entry: ExplorerSelection | null) => void;
     navigate: (directory: string) => Promise<void>;
     setModal: (modal: ModalState) => void;
     synchronize: (game: GameStatus) => Promise<boolean>;
@@ -542,6 +506,20 @@ function Explorer({
 }) {
     const directory = normalizeRelative(listing.directory);
     const fileSlots = remainingFileSlots(game, true);
+    const parentEntry: ExplorerSelection | null = directory
+        ? {
+            path: '__parent__',
+            name: '..',
+            type: 'directory',
+            size: 0,
+            virtualParent: true,
+            parentTarget: parentDirectory(directory)
+        }
+        : null;
+    const visibleEntries: ExplorerSelection[] = parentEntry
+        ? [parentEntry, ...listing.entries.map((entry) => ({ ...entry, path: normalizeRelative(entry.path) }))]
+        : listing.entries.map((entry) => ({ ...entry, path: normalizeRelative(entry.path) }));
+    const selectedIsParent = Boolean(selected && 'virtualParent' in selected && selected.virtualParent);
 
     async function goBack() {
         if (directory) {
@@ -563,8 +541,40 @@ function Explorer({
         }
     }
 
+    const breadcrumb = directory ? `CloudAudit / ${directory}` : 'CloudAudit';
+    const artwork = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}/library_600x900.jpg`;
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const searchRef = useRef<HTMLInputElement | null>(null);
+    const cloudMeta = `${formatBytes(game.auditBytes)} / ${quotaLabel(game.quotaBytes)} • ${(remainingFileSlots(game, true)?.toLocaleString() ?? '?')} files`;
+    const filteredEntries = useMemo(() => {
+        const query = searchTerm.trim().toLowerCase();
+        if (!query) return visibleEntries;
+        return visibleEntries.filter((entry) => ('virtualParent' in entry && entry.virtualParent) || entry.name.toLowerCase().includes(query));
+    }, [visibleEntries, searchTerm]);
+
+    useEffect(() => {
+        if (!searchOpen) return;
+        const id = window.setTimeout(() => searchRef.current?.focus(), 120);
+        return () => window.clearTimeout(id);
+    }, [searchOpen]);
+
+    useEffect(() => {
+        const onFindShortcut = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return;
+            event.preventDefault();
+            event.stopPropagation();
+            setSearchOpen(true);
+            window.setTimeout(() => searchRef.current?.focus(), 0);
+        };
+        window.addEventListener('keydown', onFindShortcut, true);
+        return () => window.removeEventListener('keydown', onFindShortcut, true);
+    }, []);
+
     return (
         <section className="cloud-view">
+            <div className="cloud-ambient-art" aria-hidden="true"><img src={artwork} alt="" draggable={false} /></div>
+
             <div className="cloud-topbar">
                 <div className="cloud-topbar-main">
                     <button
@@ -573,22 +583,56 @@ function Explorer({
                         title={directory ? 'Parent folder' : (hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to games')}
                         onClick={() => void goBack()}
                     >
-                        ←
+                        <BackIcon />
                     </button>
+                    <div className="cloud-game-art" aria-hidden="true">
+                        <img src={artwork} alt="" draggable={false} />
+                    </div>
                     <div className="cloud-title">
-                        <span className="status-dot running" />
-                        <strong>{game.name}</strong>
+                        <div className="cloud-title-line">
+                            <span className="status-dot running" />
+                            <strong>{game.name}</strong>
+                        </div>
+                        <small title={cloudMeta}>{cloudMeta}</small>
                     </div>
                 </div>
 
                 <div className="cloud-topbar-actions">
+                    <div className={`cloud-search-shell ${searchOpen ? 'open' : ''}`}>
+                        <button
+                            className="cloud-action-icon search-toggle"
+                            aria-label={searchOpen ? 'Close search' : 'Open search'}
+                            title={searchOpen ? 'Close search' : 'Search'}
+                            onClick={() => {
+                                if (searchOpen) {
+                                    setSearchOpen(false);
+                                    setSearchTerm('');
+                                    return;
+                                }
+                                setSearchOpen(true);
+                            }}
+                        >
+                            <SearchIcon />
+                        </button>
+                        <label className={`cloud-search-bar ${searchOpen ? 'open' : ''}`}>
+                            <SearchIcon />
+                            <input
+                                ref={searchRef}
+                                type="text"
+                                value={searchTerm}
+                                onChange={(event) => setSearchTerm(event.target.value)}
+                                placeholder="Search files..."
+                                aria-label="Search files"
+                            />
+                        </label>
+                    </div>
                     <button
-                        className="cloud-action-label"
+                        className="cloud-action-icon"
+                        aria-label="Import files"
                         title={fileSlots === 0 ? 'No new file slots remain; replacing existing files is still possible' : 'Import files or a folder'}
                         onClick={() => setModal({ kind: 'import', game, directory })}
                     >
                         <ImportIcon />
-                        <span>Import</span>
                     </button>
                     <button
                         className="cloud-action-icon"
@@ -599,76 +643,87 @@ function Explorer({
                         <NewFolderIcon />
                     </button>
                     <button
-                        className="cloud-action-icon"
+                        className="cloud-action-icon danger-action"
                         aria-label="Delete selected item"
-                        title={selected ? `Delete ${selected.name}` : 'Select a file or folder to delete'}
-                        disabled={!selected}
-                        onClick={() => selected && setModal({ kind: 'delete', game, entry: selected })}
+                        title={selectedIsParent ? 'The parent shortcut cannot be deleted' : selected ? `Delete ${selected.name}` : 'Select a file or folder to delete'}
+                        disabled={!selected || selectedIsParent}
+                        onClick={() => selected && !selectedIsParent && setModal({ kind: 'delete', game, entry: selected as AuditEntry })}
                     >
                         <TrashIcon />
                     </button>
-                    <button className="save-button cloud-action-label" onClick={() => void synchronize(game)}>
+                    <button className="cloud-action-icon" aria-label="Synchronize" title="Synchronize" onClick={() => void synchronize(game)}>
                         <SynchronizeIcon />
-                        <span>Synchronize</span>
                     </button>
                 </div>
             </div>
 
             {syncNotice && <div className="sync-notice" role="status">{syncNotice}</div>}
 
-            <div className="file-table" role="listbox" aria-label={`${game.name} cloud files`}>
-                <div key={`${listing.directory}-${navKey}`} className={`file-list-motion ${navDirection}`}>
-                    {listing.entries.length === 0 ? (
-                        <div className="empty-folder">This folder is empty</div>
-                    ) : listing.entries.map((entry) => {
-                        const cleanPath = normalizeRelative(entry.path);
-                        const normalizedEntry = { ...entry, path: cleanPath };
-                        const isSelected = selected?.path === cleanPath;
-                        return (
-                            <div
-                                key={cleanPath}
-                                className={`file-row ${entry.type} ${isSelected ? 'selected' : ''}`}
-                                role="option"
-                                aria-selected={isSelected}
-                                tabIndex={0}
-                                onClick={() => setSelected(normalizedEntry)}
-                                onDoubleClick={() => {
-                                    if (entry.type === 'directory') void navigate(cleanPath);
-                                }}
-                                onKeyDown={(event) => {
-                                    if (event.key === 'Enter' && entry.type === 'directory') void navigate(cleanPath);
-                                    if (event.key === ' ') {
-                                        event.preventDefault();
-                                        setSelected(normalizedEntry);
-                                    }
-                                }}
-                            >
-                                <span className="file-icon">{entry.type === 'directory' ? '▸' : '·'}</span>
-                                <span className="file-name">{entry.name}</span>
-                                <span className="file-size">{entry.type === 'file' ? formatBytes(entry.size) : ''}</span>
-                                <button
-                                    className="reveal-button"
-                                    aria-label={`Show ${entry.name} in system folder`}
-                                    title="Show in folder"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        setSelected(normalizedEntry);
-                                        void revealEntry(normalizedEntry);
-                                    }}
-                                    onDoubleClick={(event) => event.stopPropagation()}
-                                >
-                                    <OpenLocationIcon size={13} />
-                                </button>
+            <div className="cloud-content">
+                <div className="file-table" role="listbox" aria-label={`${game.name} cloud files`}>
+                    <div key={`${listing.directory}-${navKey}`} className={`file-list-motion ${navDirection}`}>
+                        {filteredEntries.length === 0 ? (
+                            <div className="empty-folder">
+                                <span className="empty-folder-icon"><FolderIcon size={28} /></span>
+                                <strong>This folder is empty</strong>
+                                <small>Import files or create a folder to start.</small>
                             </div>
-                        );
-                    })}
+                        ) : filteredEntries.map((entry) => {
+                            const isParentEntry = 'virtualParent' in entry && entry.virtualParent;
+                            const cleanPath = isParentEntry ? entry.path : normalizeRelative(entry.path);
+                            const isSelected = selected?.path === cleanPath;
+                            return (
+                                <div
+                                    key={`${cleanPath}-${entry.name}`}
+                                    className={`file-row ${entry.type} ${isSelected ? 'selected' : ''} ${isParentEntry ? 'parent-row' : ''}`}
+                                    role="option"
+                                    aria-selected={isSelected}
+                                    tabIndex={0}
+                                    onClick={() => setSelected(entry)}
+                                    onDoubleClick={() => {
+                                        if (isParentEntry) {
+                                            void navigate(entry.parentTarget);
+                                            return;
+                                        }
+                                        if (entry.type === 'directory') void navigate(cleanPath);
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                            if (isParentEntry) {
+                                                void navigate(entry.parentTarget);
+                                                return;
+                                            }
+                                            if (entry.type === 'directory') void navigate(cleanPath);
+                                        }
+                                        if (event.key === ' ') {
+                                            event.preventDefault();
+                                            setSelected(entry);
+                                        }
+                                    }}
+                                >
+                                    <span className="file-icon">{entry.type === 'directory' ? <FolderIcon size={16} /> : <FileIcon size={16} />}</span>
+                                    <span className="file-name">{entry.name}</span>
+                                    <span className="file-size">{isParentEntry ? 'Parent folder' : entry.type === 'file' ? formatBytes(entry.size) : 'Folder'}</span>
+                                    <button
+                                        className={`reveal-button ${isParentEntry ? 'disabled' : ''}`}
+                                        aria-label={isParentEntry ? 'Parent folder shortcut' : `Show ${entry.name} in system folder`}
+                                        title={isParentEntry ? 'Parent folder' : 'Show in folder'}
+                                        disabled={isParentEntry}
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (isParentEntry) return;
+                                            setSelected(entry);
+                                            void revealEntry(entry as AuditEntry);
+                                        }}
+                                        onDoubleClick={(event) => event.stopPropagation()}
+                                    >
+                                        <OpenLocationIcon size={13} />
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
-            </div>
-
-            <div className="cloud-footer">
-                <span>{formatBytes(game.auditBytes)} / {quotaLabel(game.quotaBytes)}</span>
-                <span>{remainingFileSlots(game, true)?.toLocaleString() ?? '?'} file slots left</span>
-                <span>{game.disk ? `${formatBytes(game.disk.free)} free` : 'Free space unknown'}</span>
             </div>
         </section>
     );
@@ -763,15 +818,25 @@ function Modal({
                 <p className="modal-copy">
                     Steam installs the game separately from its Cloud data. Keep enough local space for both before continuing.
                 </p>
-                <p className="modal-copy subtle">
-                    {cloudUnknown
-                        ? `Cloud usage is unknown. VaporStow reserves the full ${quotaLabel(game.quotaBytes)} quota.`
-                        : `Last remembered Cloud usage: ${formatBytes(rememberedCloud)}.`}
-                </p>
-                <div className="space-check">
-                    <span>Game size</span><strong>{requiredSpaceLabel(gameSize)}</strong>
-                    <span>Cloud reserve</span><strong>{requiredSpaceLabel(rememberedCloud)}</strong>
-                    <span>Total required</span><strong>{requiredSpaceLabel(totalRequired)}</strong>
+                {cloudUnknown && (
+                    <p className="modal-copy subtle">
+                        Cloud usage is unknown. VaporStow reserves the full {quotaLabel(game.quotaBytes)} quota.
+                    </p>
+                )}
+                <div className="space-calculation" aria-label="Required local space calculation">
+                    <div className="space-calculation-row">
+                        <span>Game size</span>
+                        <strong><b>+</b>{requiredSpaceLabel(gameSize)}</strong>
+                    </div>
+                    <div className="space-calculation-row">
+                        <span>Cloud reserve</span>
+                        <strong><b>+</b>{requiredSpaceLabel(rememberedCloud)}</strong>
+                    </div>
+                    <div className="space-calculation-rule" aria-hidden="true" />
+                    <div className="space-calculation-row total">
+                        <span>Total required</span>
+                        <strong><b>=</b>{requiredSpaceLabel(totalRequired)}</strong>
+                    </div>
                 </div>
                 <div className="modal-actions">
                     <button onClick={requestClose}>Cancel</button>
@@ -897,22 +962,54 @@ function Modal({
                 </div>
             </>
         );
+    } else if (active.kind === 'info') {
+        const contributors = [
+            { name: 'Nullmess', username: 'nullmess' },
+            { name: 'Ybucaille', username: 'Ybucaille' }
+        ];
+
+        content = (
+            <div className="about-modal-content">
+                <div className="about-heading">
+                    <h3>VaporStow</h3>
+                    <span>v1.0.0</span>
+                </div>
+                <div className="about-contributors">
+                    {contributors.map((contributor) => (
+                        <article className="about-contributor" key={contributor.username}>
+                            <img
+                                className="about-avatar"
+                                src={`https://github.com/${contributor.username}.png?size=160`}
+                                alt={`${contributor.name} GitHub avatar`}
+                                draggable={false}
+                            />
+                            <strong>{contributor.name}</strong>
+                            <button
+                                className="github-profile-button"
+                                onClick={() => void window.vaporApi.openGithubProfile(contributor.username)}
+                            >
+                                <GithubIcon />
+                                <span>GitHub</span>
+                            </button>
+                        </article>
+                    ))}
+                </div>
+                <div className="modal-actions about-close-row">
+                    <button className="primary" onClick={requestClose}>Close</button>
+                </div>
+            </div>
+        );
     } else if (active.kind === 'delete') {
         const parent = parentDirectory(active.entry.path);
         const isFolder = active.entry.type === 'directory';
         content = (
             <>
-                <h3>Delete {isFolder ? 'folder' : 'file'}?</h3>
-                <div className="delete-target">
-                    <span>{isFolder ? 'Folder' : 'File'}</span>
-                    <strong>{active.entry.name}</strong>
-                </div>
+                <h3>Delete {active.entry.name}</h3>
                 <p className="modal-copy warning-copy">
                     {isFolder
-                        ? 'The folder and everything inside it will be removed from the local cloud mirror.'
-                        : 'This file will be removed from the local cloud mirror.'}
+                        ? 'Are you sure you want to delete this folder and every file inside it?'
+                        : 'Are you sure you want to delete this file?'}
                 </p>
-                <p className="modal-copy subtle">The deletion is sent to Steam Cloud when you synchronize.</p>
                 <div className="modal-actions">
                     <button onClick={requestClose}>Cancel</button>
                     <button
@@ -943,14 +1040,457 @@ function Modal({
 
 // Orchestration de la session Steam Cloud.
 
+
+function gameInitials(name: string): string {
+    return name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() || '')
+        .join('');
+}
+
+function GameArtwork({ game }: { game: GameStatus }) {
+    const [failed, setFailed] = useState(false);
+    const artwork = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}/library_600x900.jpg`;
+
+    return (
+        <div className="cloud-card-art" aria-hidden="true">
+            <span>{gameInitials(game.name)}</span>
+            {!failed && <img src={artwork} alt="" draggable={false} onError={() => setFailed(true)} />}
+        </div>
+    );
+}
+
+type CloudCarouselProps = {
+    games: GameStatus[];
+    actionFor: (game: GameStatus) => string;
+    onAction: (game: GameStatus) => void;
+    introReveal?: boolean;
+    operationGame?: GameStatus | null;
+    operationPhase?: Phase;
+    operationDetail?: string | null;
+    operationProgress?: CloudTransferProgress | null;
+};
+
+function CloudCarousel({
+    games,
+    actionFor,
+    onAction,
+    introReveal = false,
+    operationGame = null,
+    operationPhase = 'closed',
+    operationDetail = null,
+    operationProgress = null
+}: CloudCarouselProps) {
+    const railRef = useRef<HTMLDivElement | null>(null);
+    const frameRef = useRef<number | null>(null);
+    const positionRef = useRef(0);
+    const targetRef = useRef(0);
+    const velocityRef = useRef(0);
+    const dragRef = useRef({
+        pointerId: -1,
+        startX: 0,
+        startPosition: 0,
+        lastX: 0,
+        lastTime: 0,
+        velocity: 0,
+        moved: false,
+        clickedGameIndex: null as number | null,
+        clickedTarget: null as number | null
+    });
+    const geometryRef = useRef({ cardWidth: 320, cardHeight: 360, artSize: 132, slot: 352 });
+    const suppressClickRef = useRef(false);
+    const [dragging, setDragging] = useState(false);
+    const [animating, setAnimating] = useState(false);
+    const [position, setPosition] = useState(0);
+    const [geometry, setGeometry] = useState({ cardWidth: 320, cardHeight: 360, artSize: 132, slot: 352 });
+    const [returningGameId, setReturningGameId] = useState<GameId | null>(null);
+    const previousOperationGameIdRef = useRef<GameId | null>(operationGame?.id ?? null);
+    const gameOrderKey = games.map((game) => game.id).join('|');
+
+    const measure = useCallback(() => {
+        const rail = railRef.current;
+        if (!rail) return;
+        const width = Math.max(320, rail.clientWidth);
+        const height = Math.max(280, rail.clientHeight);
+        const cardWidth = Math.max(230, Math.min(430, width * 0.285));
+        const cardHeight = Math.max(270, Math.min(430, height * 0.82));
+        const artSize = Math.max(92, Math.min(160, cardWidth * 0.40, cardHeight * 0.34));
+        const gap = Math.max(18, Math.min(42, width * 0.03));
+        const next = { cardWidth, cardHeight, artSize, slot: cardWidth + gap };
+        geometryRef.current = next;
+        setGeometry((current) => (
+            Math.abs(current.slot - next.slot) < 0.5
+            && Math.abs(current.cardWidth - next.cardWidth) < 0.5
+            && Math.abs(current.cardHeight - next.cardHeight) < 0.5
+            && Math.abs(current.artSize - next.artSize) < 0.5
+        ) ? current : next);
+        rail.style.setProperty('--carousel-card-width', `${cardWidth}px`);
+        rail.style.setProperty('--carousel-card-height', `${cardHeight}px`);
+        rail.style.setProperty('--carousel-art-size', `${artSize}px`);
+        rail.style.setProperty('--carousel-slot', `${cardWidth + gap}px`);
+    }, []);
+
+    const commitPosition = useCallback((next: number) => {
+        const count = games.length;
+        if (count > 0 && Math.abs(next) > count * 1000) {
+            const cycles = Math.trunc(next / count);
+            next -= cycles * count;
+            targetRef.current -= cycles * count;
+        }
+        positionRef.current = next;
+        setPosition(next);
+    }, [games.length]);
+
+    const stopAnimation = useCallback(() => {
+        if (frameRef.current !== null) {
+            window.cancelAnimationFrame(frameRef.current);
+            frameRef.current = null;
+        }
+        velocityRef.current = 0;
+        setAnimating(false);
+    }, []);
+
+    const animateTo = useCallback((target: number, initialVelocity = 0) => {
+        stopAnimation();
+        targetRef.current = target;
+        velocityRef.current = initialVelocity;
+        setAnimating(true);
+        let previous = performance.now();
+
+        const tick = (now: number) => {
+            const dt = Math.min(32, Math.max(1, now - previous)) / 1000;
+            previous = now;
+
+            const current = positionRef.current;
+            const displacement = targetRef.current - current;
+
+            // Critically damped-ish spring: smooth like a console carousel, no late focus jump.
+            const stiffness = 46;
+            const damping = 11.5;
+            const acceleration = displacement * stiffness - velocityRef.current * damping;
+            velocityRef.current += acceleration * dt;
+            const next = current + velocityRef.current * dt;
+            commitPosition(next);
+
+            if (Math.abs(displacement) < 0.0015 && Math.abs(velocityRef.current) < 0.008) {
+                commitPosition(targetRef.current);
+                velocityRef.current = 0;
+                frameRef.current = null;
+                setAnimating(false);
+                return;
+            }
+            frameRef.current = window.requestAnimationFrame(tick);
+        };
+
+        frameRef.current = window.requestAnimationFrame(tick);
+    }, [commitPosition, stopAnimation]);
+
+    const visualTargetForGame = useCallback((gameIndex: number, around = positionRef.current) => {
+        const count = games.length;
+        if (count <= 0) return 0;
+
+        let relative = gameIndex - around;
+        relative -= Math.round(relative / count) * count;
+        return around + relative;
+    }, [games.length]);
+
+    const focusGame = useCallback((gameIndex: number) => {
+        // Aim for the exact visual instance that was clicked, not just the logical index.
+        // This matters in the infinite carousel where the same game can be represented
+        // on either side of the current virtual position.
+        animateTo(visualTargetForGame(gameIndex));
+    }, [animateTo, visualTargetForGame]);
+
+    useLayoutEffect(() => {
+        if (!operationGame) return;
+        const index = games.findIndex((game) => game.id === operationGame.id);
+        if (index < 0) return;
+
+        // Lock the selected game to the exact viewport center before the loading morph is painted.
+        stopAnimation();
+        const centered = visualTargetForGame(index, positionRef.current);
+        targetRef.current = centered;
+        commitPosition(centered);
+    }, [operationGame?.id, gameOrderKey, commitPosition, stopAnimation, visualTargetForGame]);
+
+    useEffect(() => {
+        const previousId = previousOperationGameIdRef.current;
+        const currentId = operationGame?.id ?? null;
+
+        if (currentId) {
+            previousOperationGameIdRef.current = currentId;
+            setReturningGameId(null);
+            return;
+        }
+
+        if (!previousId) return;
+        setReturningGameId(previousId);
+        previousOperationGameIdRef.current = null;
+        const timer = window.setTimeout(() => setReturningGameId(null), 640);
+        return () => window.clearTimeout(timer);
+    }, [operationGame?.id]);
+
+    useLayoutEffect(() => {
+        measure();
+        commitPosition(0);
+        targetRef.current = 0;
+        const rail = railRef.current;
+        if (!rail) return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(rail);
+        return () => observer.disconnect();
+    }, [gameOrderKey, commitPosition, measure]);
+
+    useEffect(() => () => stopAnimation(), [stopAnimation]);
+
+    const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (operationGame || returningGameId || event.button !== 0 || !railRef.current) return;
+        const target = event.target as HTMLElement;
+        if (target.closest('button, a, input, [data-no-carousel-drag="true"]')) return;
+
+        stopAnimation();
+        const now = performance.now();
+        const card = target.closest<HTMLElement>('[data-game-index]');
+        const clickedGameIndex = card ? Number(card.dataset.gameIndex) : null;
+        const clickedTarget = clickedGameIndex !== null && Number.isFinite(clickedGameIndex)
+            ? visualTargetForGame(clickedGameIndex, positionRef.current)
+            : null;
+
+        dragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startPosition: positionRef.current,
+            lastX: event.clientX,
+            lastTime: now,
+            velocity: 0,
+            moved: false,
+            clickedGameIndex,
+            clickedTarget
+        };
+        railRef.current.setPointerCapture(event.pointerId);
+        setDragging(true);
+    };
+
+    const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current;
+        if (drag.pointerId !== event.pointerId) return;
+
+        const slot = Math.max(1, geometryRef.current.slot);
+        const deltaPx = event.clientX - drag.startX;
+        if (Math.abs(deltaPx) > 4) drag.moved = true;
+
+        const now = performance.now();
+        const dt = Math.max(1, now - drag.lastTime);
+        const instantaneous = -(event.clientX - drag.lastX) / slot / (dt / 1000);
+        drag.velocity = drag.velocity * 0.64 + instantaneous * 0.36;
+        drag.lastX = event.clientX;
+        drag.lastTime = now;
+
+        commitPosition(drag.startPosition - deltaPx / slot);
+    };
+
+    const pointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+        const rail = railRef.current;
+        const drag = dragRef.current;
+        if (drag.pointerId !== event.pointerId) return;
+        if (rail?.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+
+        suppressClickRef.current = drag.moved;
+        dragRef.current.pointerId = -1;
+        setDragging(false);
+
+        if (drag.moved) {
+            // Project the flick, then snap the spring to the nearest logical card.
+            const projected = positionRef.current + Math.max(-8, Math.min(8, drag.velocity)) * 0.16;
+            const target = Math.round(projected);
+            animateTo(target, drag.velocity * 0.32);
+        } else if (drag.clickedTarget !== null) {
+            // A simple click always centers the exact card that was under the pointer.
+            // Resolve it from pointer-down so the rail cannot snap elsewhere first.
+            animateTo(drag.clickedTarget);
+        } else {
+            animateTo(Math.round(positionRef.current));
+        }
+
+        if (suppressClickRef.current) {
+            window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+        }
+    };
+
+    const operationMode = Boolean(operationGame && operationPhase !== 'closed' && operationPhase !== 'open');
+    const returningMode = Boolean(!operationMode && returningGameId);
+    const operationIsSplitRestore = Boolean(
+        operationPhase === 'opening'
+        && operationProgress
+        && operationProgress.direction === 'unknown'
+        && (operationProgress.totalParts ?? 0) > 0
+    );
+    const operationSubtitle = operationProgressSubtitle(operationPhase, operationProgress, operationIsSplitRestore)
+        || operationDetail
+        || operationFallbackSubtitle(operationPhase);
+    const operationLogs = (() => {
+        if (!operationMode) return [] as string[];
+        const lines: string[] = [];
+        if (operationSubtitle) lines.push(operationSubtitle);
+        if (operationProgress?.currentFile) lines.push(displayFileName(operationProgress.currentFile));
+        if (operationProgress?.totalFiles !== null && operationProgress?.totalFiles !== undefined && operationProgress.totalFiles > 1) {
+            lines.push(`${operationProgress.completedFiles} / ${operationProgress.totalFiles} files`);
+        }
+        if (operationProgress?.percent !== null && operationProgress?.percent !== undefined) {
+            lines.push(`${Math.round(operationProgress.percent)}% complete`);
+        }
+        if (operationProgress?.speedBytesPerSecond !== null && operationProgress?.speedBytesPerSecond !== undefined && operationProgress.speedBytesPerSecond > 0) {
+            lines.push(`${formatBytes(operationProgress.speedBytesPerSecond)}/s`);
+        }
+        return lines.filter(Boolean);
+    })();
+    const operationCurrentLog = compactStatusLine(
+        operationLogs.length > 0
+            ? operationLogs[operationLogs.length - 1]
+            : 'Preparing cloud session...'
+    );
+
+    const count = games.length;
+
+    return (
+        <div
+            ref={railRef}
+            className={`cloud-carousel ${dragging ? 'dragging' : ''} ${animating ? 'animating' : ''} ${introReveal ? 'intro-reveal' : ''} ${operationMode ? 'operation-mode' : ''} ${returningMode ? 'operation-returning' : ''}`}
+            onPointerDown={pointerDown}
+            onPointerMove={pointerMove}
+            onPointerUp={pointerEnd}
+            onPointerCancel={pointerEnd}
+            onClickCapture={(event) => {
+                if (!suppressClickRef.current) return;
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            onWheel={(event) => {
+                if (operationGame || returningGameId || games.length === 0) return;
+                event.preventDefault();
+                stopAnimation();
+                const dominant = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+                const direction = Math.sign(dominant);
+                if (direction === 0) return;
+                const base = Math.round(positionRef.current);
+                animateTo(base + direction);
+            }}
+            tabIndex={0}
+            onKeyDown={(event) => {
+                if (operationGame || returningGameId || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
+                event.preventDefault();
+                const direction = event.key === 'ArrowRight' ? 1 : -1;
+                animateTo(Math.round(positionRef.current) + direction);
+            }}
+        >
+            {games.map((game, gameIndex) => {
+                let relative = gameIndex - position;
+                if (count > 0) relative -= Math.round(relative / count) * count;
+                const distance = Math.abs(relative);
+                const centerWeight = Math.max(0, 1 - Math.min(distance, 1));
+                const sideWeight = Math.max(0, 1 - Math.abs(distance - 1));
+                const opacity = Math.max(0.08, Math.min(1, 0.08 + centerWeight * 0.92 + sideWeight * 0.70));
+                const scale = 0.82 + centerWeight * 0.28 + sideWeight * 0.10;
+                const brightness = 0.58 + centerWeight * 0.42 + sideWeight * 0.24;
+                const saturation = 0.62 + centerWeight * 0.38 + sideWeight * 0.22;
+                const x = relative * geometry.slot;
+                const focused = distance < 0.5;
+                const actionLabel = actionFor(game);
+                const current = game.rememberedBytes ?? 0;
+                const currentFiles = game.rememberedFiles ?? 0;
+                const remaining = game.rememberedFiles === null
+                    ? game.maxFiles
+                    : Math.max(0, game.maxFiles - game.rememberedFiles);
+
+                return (
+                    <article
+                        className={`cloud-card ${focused ? 'focused' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
+                        key={game.id}
+                        data-game-index={gameIndex}
+                        style={{
+                            '--card-x': `${x}px`,
+                            '--card-opacity': (operationMode ? (operationGame?.id === game.id ? 1 : 0) : opacity).toFixed(3),
+                            '--card-scale': (operationMode && operationGame?.id === game.id ? 1.10 : scale).toFixed(4),
+                            '--card-saturation': (operationMode && operationGame?.id === game.id ? 1 : saturation).toFixed(3),
+                            '--card-brightness': (operationMode && operationGame?.id === game.id ? 1 : brightness).toFixed(3),
+                            '--intro-delay': `${relative < -0.5 && relative > -1.5 ? 0 : relative > 0.5 && relative < 1.5 ? 120 : distance < 0.5 ? 260 : 360}ms`,
+                            zIndex: Math.max(1, 100 - Math.round(distance * 20))
+                        } as CSSProperties}
+                        onClick={() => {
+                            if (suppressClickRef.current || dragging) return;
+                            if (!focused) focusGame(gameIndex);
+                        }}
+                    >
+                        <span
+                            className={`cloud-card-status status-dot ${
+                                operationMode && operationGame?.id === game.id
+                                    ? `cloud-loading-status ${operationPhase === 'saving' || operationPhase === 'closing' || operationPhase === 'saved' ? 'syncing-out' : 'syncing-in'}`
+                                    : statusTone(game)
+                            }`}
+                            title={game.running ? 'Running' : game.installed ? 'Installed' : 'Not installed'}
+                        />
+                        <GameArtwork game={game} />
+                        <div className="cloud-card-content-stack">
+                            <div className="cloud-card-normal-content">
+                                <div className="cloud-card-title compact-title">
+                                    <strong>{game.name}</strong>
+                                </div>
+                                <div className="cloud-card-usage">
+                                    <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
+                                    <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
+                                </div>
+                                <button
+                                    disabled={actionLabel === 'Unavailable' || game.installing}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (!focused) {
+                                            focusGame(gameIndex);
+                                            return;
+                                        }
+                                        onAction(game);
+                                    }}
+                                >
+                                    {focused ? actionLabel : 'Select'}
+                                </button>
+                            </div>
+
+                            <div className="cloud-card-loading-content" aria-live="polite">
+                                <div className="cloud-card-title compact-title loading-slot-title">
+                                    <strong>{game.name}</strong>
+                                </div>
+                                <div className="cloud-card-usage loading-slot-usage">
+                                    <span>Cloud access.</span>
+                                    {operationMode && operationGame?.id === game.id && (
+                                        <span key={operationCurrentLog} className="cloud-loading-logtext" title={operationCurrentLog}>
+                                            {operationCurrentLog}
+                                        </span>
+                                    )}
+                                </div>
+                                <div className="cloud-loading-action">
+                                    <div className="cloud-loading-orbit" aria-hidden="true"><span /></div>
+                                </div>
+                            </div>
+                        </div>
+                    </article>
+                );
+            })}
+        </div>
+    );
+}
+
 export default function App() {
     const [status, setStatus] = useState<AppStatus | null>(null);
     const [modal, setModal] = useState<ModalState>(null);
     const [loading, setLoading] = useState(true);
+    const [introReady, setIntroReady] = useState(false);
+    const [introStage, setIntroStage] = useState<'show' | 'exit' | 'reveal' | 'done'>('show');
+    const [fullscreen, setFullscreen] = useState(false);
     const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
     const [phase, setPhase] = useState<Phase>('closed');
     const [listing, setListing] = useState<DirectoryListing>({ directory: '', entries: [] });
-    const [selected, setSelected] = useState<AuditEntry | null>(null);
+    const [selected, setSelected] = useState<ExplorerSelection | null>(null);
     const [navDirection, setNavDirection] = useState<NavDirection>('same');
     const [navKey, setNavKey] = useState(0);
     const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -970,6 +1510,18 @@ export default function App() {
     phaseRef.current = phase;
     statusRef.current = status;
 
+    useEffect(() => {
+        const onFindShortcut = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return;
+            if (activeGameIdRef.current) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setSearchOpen(true);
+        };
+        window.addEventListener('keydown', onFindShortcut, true);
+        return () => window.removeEventListener('keydown', onFindShortcut, true);
+    }, []);
+
     const refresh = useCallback(async (): Promise<AppStatus> => {
         const next = await window.vaporApi.getStatus();
         setStatus(next);
@@ -985,6 +1537,33 @@ export default function App() {
         });
         setSelected(null);
     }, []);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => setIntroReady(true), 1550);
+        void window.vaporApi.isFullscreen().then(setFullscreen).catch(() => undefined);
+        const removeFullscreenListener = window.vaporApi.onFullscreenChanged(setFullscreen);
+        return () => {
+            window.clearTimeout(timer);
+            removeFullscreenListener();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!introReady || loading || !status || introStage !== 'show') return;
+        setIntroStage('exit');
+    }, [introReady, loading, status, introStage]);
+
+    useEffect(() => {
+        if (introStage !== 'exit') return;
+        const finishSplash = window.setTimeout(() => setIntroStage('reveal'), 560);
+        return () => window.clearTimeout(finishSplash);
+    }, [introStage]);
+
+    useEffect(() => {
+        if (introStage !== 'reveal') return;
+        const finishReveal = window.setTimeout(() => setIntroStage('done'), 1320);
+        return () => window.clearTimeout(finishReveal);
+    }, [introStage]);
 
     useEffect(() => {
         void refresh();
@@ -1602,27 +2181,59 @@ export default function App() {
         });
     }, []);
 
-    if (loading || !status) return <main className="loading">VaporStow</main>;
+    if (loading || !status) {
+        return (
+            <main className="startup-splash" aria-label="VaporStow is starting">
+                <div className="startup-glow" />
+                <img className="startup-logo" src={startupLogo} alt="" />
+                <div className="startup-wordmark">VaporStow</div>
+                <div className="startup-loader"><span /></div>
+            </main>
+        );
+    }
 
-    const stageKey = activeGameId ? `${activeGameId}-${phase}` : 'volumes';
+    const stageKey = activeGameId && phase === 'open' ? activeGameId : 'volumes';
+    const showIntroOverlay = introStage === 'show' || introStage === 'exit';
+    const introShellClass = introStage === 'show' || introStage === 'exit'
+        ? 'intro-pending'
+        : introStage === 'reveal'
+            ? 'intro-revealing'
+            : 'intro-ready';
 
     return (
         <>
-            <main className={`shell ${activeGameId ? 'focused' : ''}`}>
-                <header>
-                    <div className="brand">VaporStow <span>v{status.appVersion}</span></div>
-                    {!activeGameId && (
-                        <button className="cloud-search-trigger" onClick={() => setSearchOpen(true)}>
-                            <SearchIcon />
-                            <span>Search Cloud…</span>
+            <main className={`shell ${activeGameId ? 'focused' : ''} ${status.platform === 'linux' ? 'linux-shell' : ''} ${introShellClass}`}>
+                {status.platform === 'linux' && (
+                    <div className="linux-window-controls" data-no-carousel-drag="true">
+                        <button
+                            className="info"
+                            title="Information"
+                            aria-label="Information"
+                            onClick={() => setModal({ kind: 'info' })}
+                        >
+                            <InfoIcon />
                         </button>
-                    )}
+                        <button
+                            className={fullscreen ? 'active' : ''}
+                            title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                            aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                            onClick={() => void window.vaporApi.toggleFullscreen().then(setFullscreen)}
+                        >
+                            <FullscreenIcon active={fullscreen} />
+                        </button>
+                        <button className="close" title="Close" aria-label="Close" onClick={() => window.vaporApi.requestWindowClose()}>
+                            <CloseIcon />
+                        </button>
+                    </div>
+                )}
+                <header>
+                    <div className="brand">VaporStow</div>
                     <button
                         className={`steam ${!status.steamInstalled ? 'missing' : status.steamRunning ? 'ok' : 'idle'}`}
                         title={!status.steamInstalled ? 'Steam is not installed' : status.steamRunning ? 'Steam is running' : 'Steam is installed but not running'}
                         onClick={() => !status.steamInstalled && void window.vaporApi.openSteamDownload()}
                     >
-                        <i /> Steam
+                        Steam <i />
                     </button>
                 </header>
 
@@ -1633,12 +2244,11 @@ export default function App() {
                         </button>
                     )}
 
-                    {!activeGameId ? (
-                        <section className="volume-list">
-                            {[...status.games]
-                                .sort((a, b) => a.installSize - b.installSize)
-                                .map((game, index) => {
-                                const actionLabel = !game.platformSupported
+                    {(!activeGameId || (activeGame && phase !== 'open')) ? (
+                        <section className={`home-clouds ${activeGame && phase !== 'open' ? 'cloud-operation-active' : ''}`}>
+                            <CloudCarousel
+                                games={[...status.games].sort((a, b) => a.installSize - b.installSize)}
+                                actionFor={(game) => !game.platformSupported
                                     ? 'Store'
                                     : game.installing
                                         ? 'Installing…'
@@ -1646,29 +2256,27 @@ export default function App() {
                                             ? 'Install'
                                             : !game.cloudRoot
                                                 ? 'Unavailable'
-                                                : 'Open';
-
-                                return (
-                                    <div className="volume-row" key={game.id} style={{ '--row-index': index } as CSSProperties}>
-                                        <div className="volume-name">
-                                            <span className={`status-dot ${statusTone(game)}`} />
-                                            <strong>{game.name}</strong>
-                                            <span className="volume-size">{requiredSpaceLabel(game.installSize)}</span>
-                                        </div>
-                                        <span className="volume-usage">{usageLabel(game, false)}</span>
-                                        <button
-                                            disabled={actionLabel === 'Unavailable' || game.installing}
-                                            onClick={() => {
-                                                if (!game.platformSupported) void window.vaporApi.openStore(game.id);
-                                                else if (!game.installed) setModal({ kind: 'install', game });
-                                                else setModal({ kind: 'open', game });
-                                            }}
-                                        >
-                                            {actionLabel}
-                                        </button>
-                                    </div>
-                                );
-                            })}
+                                                : 'Open'}
+                                onAction={(game) => {
+                                    if (!game.platformSupported) void window.vaporApi.openStore(game.id);
+                                    else if (!game.installed) setModal({ kind: 'install', game });
+                                    else setModal({ kind: 'open', game });
+                                }}
+                                introReveal={introStage === 'reveal'}
+                                operationGame={activeGame && phase !== 'open' ? activeGame : null}
+                                operationPhase={phase}
+                                operationDetail={operationDetail}
+                                operationProgress={transferProgress}
+                            />
+                            {!activeGameId && (introStage === 'reveal' || introStage === 'done') && (
+                                <button className="home-search-trigger" onClick={() => setSearchOpen(true)}>
+                                    <SearchIcon />
+                                    <span>Search Cloud…</span>
+                                </button>
+                            )}
+                            {activeGameId && phase !== 'open' && (
+                                <div className="home-search-trigger home-search-placeholder" aria-hidden="true" />
+                            )}
                         </section>
                     ) : activeGame ? (
                         phase === 'open' ? (
@@ -1686,14 +2294,21 @@ export default function App() {
                                 leaveSession={leaveCloudSession}
                                 hasUnsynchronizedChanges={sessionDirty}
                             />
-                        ) : (
-                            <Operation phase={phase} gameName={activeGame.name} detail={operationDetail} progress={transferProgress} />
-                        )
+                        ) : null
                     ) : (
                         <div className="loading-inline">Loading volume…</div>
                     )}
                 </div>
             </main>
+
+            {showIntroOverlay && (
+                <div className={`startup-splash startup-overlay ${introStage === 'exit' ? 'exiting' : ''}`} aria-label="VaporStow is starting">
+                    <div className="startup-glow" />
+                    <img className="startup-logo" src={startupLogo} alt="" />
+                    <div className="startup-wordmark">VaporStow</div>
+                    <div className="startup-loader"><span /></div>
+                </div>
+            )}
 
             {searchOpen && !activeGameId && (
                 <SearchModal

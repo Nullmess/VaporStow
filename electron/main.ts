@@ -144,6 +144,31 @@ function refocusVaporStow() {
     }
 }
 
+function applyFullscreenPriority(enabled: boolean) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    try {
+        // Le niveau screen-saver est le niveau Electron le plus élevé prévu pour
+        // garder une fenêtre au-dessus des fenêtres normales et des jeux.
+        mainWindow.setAlwaysOnTop(enabled, enabled ? 'screen-saver' : 'normal', enabled ? 1 : 0);
+    } catch {
+        // Certains compositors Linux/Wayland peuvent limiter le niveau demandé.
+    }
+
+    if (process.platform !== 'win32') {
+        try {
+            mainWindow.setVisibleOnAllWorkspaces(enabled, { visibleOnFullScreen: enabled });
+        } catch {
+            // La prise en charge dépend du gestionnaire de fenêtres.
+        }
+    }
+
+    if (enabled) {
+        try { mainWindow.setFocusable(true); } catch { /* best effort */ }
+        refocusVaporStow();
+    }
+}
+
 async function startBackgroundGuard(id: GameId) {
     await stopBackgroundGuard(id);
     const game = gameById(id);
@@ -327,6 +352,16 @@ function registerIpc() {
         await shell.openExternal('https://store.steampowered.com/about/');
     });
 
+    ipcMain.handle('github:open-profile', async (_event, username: string) => {
+        const allowed = new Map([
+            ['nullmess', 'nullmess'],
+            ['ybucaille', 'Ybucaille']
+        ]);
+        const canonical = allowed.get(String(username).toLowerCase());
+        if (!canonical) throw new Error('Unknown GitHub profile.');
+        await shell.openExternal(`https://github.com/${canonical}`);
+    });
+
     ipcMain.handle('steam:run', async () => {
         const env = await getEnvironment();
         if (!env.steamRoot) throw new Error('Steam is not installed.');
@@ -350,8 +385,13 @@ function registerIpc() {
     ipcMain.handle('game:run', async (_event, id: GameId) => {
         const game = gameById(id);
         const env = await getEnvironment();
-        const launched = await steam.launchAppBackground(env.steamRoot, game.appId);
-        if (!launched) await shell.openExternal(game.steamRunUrl);
+        const launched = await steam.launchAppBackground(env.steamRoot, game.appId, game.launchArgs ?? []);
+        if (!launched) {
+            const launchSuffix = game.launchArgs?.length
+                ? `//${game.launchArgs.map((arg) => encodeURIComponent(arg)).join('%20')}/`
+                : '';
+            await shell.openExternal(`${game.steamRunUrl}${launchSuffix}`);
+        }
     });
 
     ipcMain.handle('game:background-start', async (_event, id: GameId) => startBackgroundGuard(id));
@@ -592,6 +632,19 @@ function registerIpc() {
         return steam.recentCloudLog(env.steamRoot, game.appId, 120);
     });
 
+    ipcMain.handle('window:toggle-fullscreen', async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return false;
+        const next = !mainWindow.isFullScreen();
+        applyFullscreenPriority(next);
+        mainWindow.setFullScreen(next);
+        if (next) applyFullscreenPriority(true);
+        return next;
+    });
+
+    ipcMain.handle('window:is-fullscreen', async () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+
+    ipcMain.on('window:request-close', () => requestRendererClose(false));
+
     ipcMain.on('app:close-ready', () => {
         rendererClosePending = false;
         rendererCloseApproved = true;
@@ -631,29 +684,30 @@ function createWindow() {
     rendererCloseApproved = false;
     rendererQuitRequested = false;
 
-    // Fixer la fenêtre selon la work area pour rester compatible avec les écrans 768p.
+    // Démarrer dans une grande fenêtre type Big Picture tout en laissant l'utilisateur
+    // la réduire, l'agrandir ou la maximiser librement.
     const workArea = screen.getPrimaryDisplay().workAreaSize;
-    const width = Math.min(
-        Math.max(560, workArea.width - 16),
-        Math.max(720, Math.min(1040, Math.floor(workArea.width * 0.90)))
-    );
-    const height = Math.min(
-        Math.max(500, workArea.height - 16),
-        Math.max(540, Math.min(720, Math.floor(workArea.height * 0.90)))
-    );
+    const width = Math.min(workArea.width - 24, Math.max(960, Math.floor(workArea.width * 0.88)));
+    const height = Math.min(workArea.height - 24, Math.max(620, Math.floor(workArea.height * 0.86)));
 
     mainWindow = new BrowserWindow({
         width,
         height,
         center: true,
-        resizable: false,
-        maximizable: false,
-        fullscreenable: false,
+        minWidth: 760,
+        minHeight: 520,
+        resizable: true,
+        maximizable: true,
+        fullscreenable: true,
         backgroundColor: '#0b0c0e',
-        titleBarStyle: 'hidden',
-        ...(process.platform !== 'darwin'
-            ? { titleBarOverlay: { color: '#0b0c0e', symbolColor: '#777a80', height: 34 } }
-            : {}),
+        ...(process.platform === 'linux'
+            ? { frame: false }
+            : {
+                titleBarStyle: 'hidden' as const,
+                ...(process.platform === 'win32'
+                    ? { titleBarOverlay: { color: '#0b0c0e', symbolColor: '#777a80', height: 34 } }
+                    : {})
+            }),
         title: 'VaporStow',
         ...(process.platform !== 'darwin'
             ? {
@@ -675,13 +729,31 @@ function createWindow() {
         }
     });
 
-    // Fixer aussi min/max pour les window managers Linux les moins fiables.
-    mainWindow.setMinimumSize(width, height);
-    mainWindow.setMaximumSize(width, height);
-    mainWindow.setResizable(false);
-    mainWindow.setMaximizable(false);
-    mainWindow.setFullScreenable(false);
+    mainWindow.setMinimumSize(760, 520);
+    mainWindow.setResizable(true);
+    mainWindow.setMaximizable(true);
+    mainWindow.setFullScreenable(true);
     mainWindow.setMenuBarVisibility(false);
+    mainWindow.on('enter-full-screen', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        applyFullscreenPriority(true);
+        mainWindow.webContents.send('window:fullscreen-changed', true);
+    });
+    mainWindow.on('leave-full-screen', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        applyFullscreenPriority(false);
+        mainWindow.webContents.send('window:fullscreen-changed', false);
+    });
+    mainWindow.on('blur', () => {
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFullScreen()) return;
+        // Un jeu peut tenter de prendre le focus juste après son lancement.
+        // Réappliquer le niveau top-most sur la fenêtre entière, quelle que soit
+        // la page actuellement affichée par le renderer.
+        setTimeout(() => {
+            if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFullScreen()) return;
+            applyFullscreenPriority(true);
+        }, 30).unref();
+    });
     mainWindow.once('ready-to-show', () => mainWindow?.show());
     mainWindow.on('close', (event) => {
         if (rendererCloseApproved) return;

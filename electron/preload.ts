@@ -1,8 +1,9 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 contextBridge.exposeInMainWorld('vaporApi', {
     getStatus: () => ipcRenderer.invoke('status:get'),
     openSteamDownload: () => ipcRenderer.invoke('steam:download'),
+    openGithubProfile: (username: string) => ipcRenderer.invoke('github:open-profile', username),
     runSteam: () => ipcRenderer.invoke('steam:run'),
     openStore: (id: string) => ipcRenderer.invoke('game:open-store', id),
     installGame: (id: string) => ipcRenderer.invoke('game:install', id),
@@ -33,6 +34,14 @@ contextBridge.exposeInMainWorld('vaporApi', {
     openFolder: (id: string, relativeDirectory: string) => ipcRenderer.invoke('cloud:open-folder', id, relativeDirectory),
     revealEntry: (id: string, relativePath: string) => ipcRenderer.invoke('cloud:reveal-entry', id, relativePath),
     getLogs: (id: string) => ipcRenderer.invoke('cloud:logs', id),
+    toggleFullscreen: () => ipcRenderer.invoke('window:toggle-fullscreen'),
+    isFullscreen: () => ipcRenderer.invoke('window:is-fullscreen'),
+    requestWindowClose: () => ipcRenderer.send('window:request-close'),
+    onFullscreenChanged: (callback: (fullscreen: boolean) => void) => {
+        const listener = (_event: IpcRendererEvent, fullscreen: boolean) => callback(fullscreen);
+        ipcRenderer.on('window:fullscreen-changed', listener);
+        return () => ipcRenderer.removeListener('window:fullscreen-changed', listener);
+    },
     onWindowCloseRequested: (callback: () => void) => {
         const listener = () => callback();
         ipcRenderer.on('app:close-request', listener);

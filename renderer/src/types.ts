@@ -153,6 +153,7 @@ export type RestoreSplitResult = {
 export type VaporApi = {
     getStatus: () => Promise<AppStatus>;
     openSteamDownload: () => Promise<void>;
+    openGithubProfile: (username: string) => Promise<void>;
     runSteam: () => Promise<{ launched: boolean; alreadyRunning: boolean }>;
     openStore: (id: GameStatus['id']) => Promise<void>;
     installGame: (id: GameStatus['id']) => Promise<void>;
@@ -191,6 +192,10 @@ export type VaporApi = {
     openFolder: (id: GameStatus['id'], relativeDirectory: string) => Promise<boolean>;
     revealEntry: (id: GameStatus['id'], relativePath: string) => Promise<boolean>;
     getLogs: (id: GameStatus['id']) => Promise<string[]>;
+    toggleFullscreen: () => Promise<boolean>;
+    isFullscreen: () => Promise<boolean>;
+    requestWindowClose: () => void;
+    onFullscreenChanged: (callback: (fullscreen: boolean) => void) => () => void;
     onWindowCloseRequested: (callback: () => void) => () => void;
     confirmWindowClose: () => void;
     cancelWindowClose: () => void;
