@@ -16,6 +16,9 @@
     <a href="https://github.com/nullmess/VaporStow/stargazers">
         <img src="https://img.shields.io/github/stars/nullmess/VaporStow?style=flat&logo=github" alt="Stars">
     </a>
+    <a href="https://github.com/nullmess/VaporStow/releases/latest">
+        <img src="https://img.shields.io/github/v/release/nullmess/VaporStow?style=flat&label=release" alt="Release">
+    </a>
     <a href="LICENSE">
         <img src="https://img.shields.io/github/license/nullmess/VaporStow?style=flat" alt="License">
     </a>
