@@ -1180,8 +1180,8 @@ export async function cloudTransferProgress(
     const complete = direction === 'up'
         ? /upload complete, result ok|upload complete in build list|successfully synced to changenumber|sync complete/i.test(text)
         : direction === 'down'
-            ? /download complete, result ok|download complete in build list|successfully synced to changenumber/i.test(text)
-            : /successfully synced to changenumber/i.test(text);
+            ? /download complete, result ok|download complete in build list|successfully synced to changenumber|autocloud complete/i.test(text)
+            : /successfully synced to changenumber|autocloud complete/i.test(text);
 
     // Garder le progress indéterminé tant que Steam peut ajouter des fichiers.
     const batchReady = complete || (direction === 'up'

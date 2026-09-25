@@ -1029,22 +1029,33 @@ export default function App() {
 
             const game = next.games.find((item) => item.id === id);
             if (!game) throw new Error('Game status disappeared.');
-            if (game.running === expected) return game;
 
             if (progress) {
                 setTransferProgress(progress);
+                if (progress.state === 'failed') {
+                    throw new Error('Steam Cloud synchronization failed.');
+                }
                 if (progress.state !== 'waiting') {
-                    const waitingLaunch = expected && progress.state === 'complete';
+                    const waitingLaunch = expected && progress.state === 'complete' && !game.running;
+                    const waitingCloud = expected && game.running && progress.state !== 'complete';
                     setOperationDetail(waitingLaunch
                         ? 'Steam Cloud synchronized. Waiting for Steam to launch the game…'
-                        : progress.message);
+                        : waitingCloud
+                            ? 'Waiting for Steam Cloud to finish restoring files…'
+                            : progress.message);
                 }
             }
+
+            // Pour une ouverture, ne jamais exposer CloudAudit tant que Steam n'a pas
+            // confirmé la fin du pull Auto-Cloud. Le process du jeu peut démarrer avant
+            // que les derniers fichiers soient réellement présents sur le disque.
+            const cloudReady = cloudMarker === undefined || !expected || progress?.state === 'complete';
+            if (game.running === expected && cloudReady) return game;
 
             // Relancer avec backoff si une update Steam a consommé la demande.
             const now = Date.now();
             const retryReady = progress?.state === 'complete' || now - started >= 120_000;
-            if (expected && retryReady && now >= nextLaunchRetry) {
+            if (expected && !game.running && retryReady && now >= nextLaunchRetry) {
                 setOperationDetail('Waiting for Steam to launch the game…');
                 await window.vaporApi.runGame(id);
                 launchRetryDelay = Math.min(launchRetryDelay * 2, 120_000);
@@ -1096,6 +1107,10 @@ export default function App() {
                 synced = await waitForRunning(game.id, true, pullLog.marker, 'down');
                 const finalPull = await window.vaporApi.getCloudProgress(game.id, pullLog.marker, 'down').catch(() => null);
                 if (finalPull) setTransferProgress(finalPull);
+
+                // Laisser les dernières écritures locales de Steam se stabiliser avant
+                // de lire/reconstruire CloudAudit.
+                await sleep(500);
             }
 
             // Rebuild les payloads split après le pull et avant d'afficher l'explorer.
