@@ -11,7 +11,7 @@ export type DirectoryListing = {
 };
 
 export type CloudSearchEntry = {
-    gameId: 'asteroid' | 'world-of-shooting';
+    gameId: 'neko-dice' | 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
     gameName: string;
     volumeName: string;
     path: string;
@@ -23,7 +23,7 @@ export type CloudSearchEntry = {
 };
 
 export type GameStatus = {
-    id: 'asteroid' | 'world-of-shooting';
+    id: 'neko-dice' | 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
     appId: string;
     name: string;
     volumeName: string;

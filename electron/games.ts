@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-export type GameId = 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
+export type GameId = 'neko-dice' | 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
 
 export type CloudContext = {
     steamLibraries: string[];
@@ -32,6 +32,19 @@ export type GameDefinition = {
 
 const GIB = 1024 ** 3;
 const LARGE_QUOTA = 100_000_000_000;
+
+function nekoDiceCloudRoot({ installedLibrary }: CloudContext): string | null {
+    if (!installedLibrary) return null;
+
+    return path.join(
+        installedLibrary,
+        'steamapps',
+        'common',
+        'NekoDice',
+        'NekoData',
+        'Model'
+    );
+}
 
 function asteroidCloudRoot(): string {
     if (process.platform === 'win32') {
@@ -99,6 +112,25 @@ function worldOfShootingCloudRoot({ installedLibrary, steamId64 }: CloudContext)
 }
 
 export const games: GameDefinition[] = [
+    {
+        id: 'neko-dice',
+        appId: '1621860',
+        name: 'NekoDice',
+        volumeName: 'Neko',
+        quotaBytes: LARGE_QUOTA,
+        installSizeFallbackBytes: 581.62 * 1024 ** 2,
+        maxFiles: 10_000,
+        cloudPattern: '* · recursive · Model',
+        platforms: ['win32', 'linux'],
+        nativeCloudPlatforms: ['win32'],
+        protonExperimental: true,
+        storeUrl: 'https://store.steampowered.com/app/1621860/NekoDice/',
+        steamInstallUrl: 'steam://install/1621860',
+        steamRunUrl: 'steam://run/1621860',
+        processHints: ['NekoDice', 'NekoDice.exe'],
+        windowHints: ['NekoDice'],
+        getCloudRoot: nekoDiceCloudRoot
+    },
     {
         id: 'asteroid',
         appId: '2020850',

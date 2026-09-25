@@ -46,6 +46,7 @@
 
 ## 🎮 Supported Games
 
+- NekoDice (`1621860`)
 - Asteroid (`2020850`)
 - Hunt For Gods (`576940`)
 - World of Shooting (`1678150`)
