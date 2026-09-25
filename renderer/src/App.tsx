@@ -1260,7 +1260,12 @@ export default function App() {
         setOperationDetail(null);
         setTransferProgress(null);
         setSessionDirty(false);
+        setSelected(null);
+        setSearchOpen(false);
         setPhase('closed');
+
+        // Toute nouvelle ouverture normale repart de la racine CloudAudit.
+        // Ne jamais conserver le sous-dossier visité avant une synchronisation.
         setListing({ directory: '', entries: [] });
         setNavDirection('same');
         setNavKey((value) => value + 1);
@@ -1615,7 +1620,9 @@ export default function App() {
 
                     {!activeGameId ? (
                         <section className="volume-list">
-                            {status.games.map((game, index) => {
+                            {[...status.games]
+                                .sort((a, b) => a.installSize - b.installSize)
+                                .map((game, index) => {
                                 const actionLabel = !game.platformSupported
                                     ? 'Store'
                                     : game.installing

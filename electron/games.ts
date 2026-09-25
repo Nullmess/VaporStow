@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-export type GameId = 'asteroid' | 'world-of-shooting';
+export type GameId = 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
 
 export type CloudContext = {
     steamLibraries: string[];
@@ -46,6 +46,18 @@ function asteroidCloudRoot(): string {
     }
 
     return path.join(os.homedir(), '.config', 'Asteroid');
+}
+
+function huntForGodsCloudRoot({ installedLibrary }: CloudContext): string | null {
+    if (!installedLibrary) return null;
+
+    return path.join(
+        installedLibrary,
+        'steamapps',
+        'common',
+        'Hunt For Gods',
+        'ItemSets'
+    );
 }
 
 function worldOfShootingCloudRoot({ installedLibrary, steamId64 }: CloudContext): string | null {
@@ -93,7 +105,7 @@ export const games: GameDefinition[] = [
         name: 'Asteroid',
         volumeName: 'Orbit',
         quotaBytes: LARGE_QUOTA,
-        installSizeFallbackBytes: 1 * GIB,
+        installSizeFallbackBytes: 964.43 * 1024 ** 2,
         maxFiles: 10_000,
         cloudPattern: '* · recursive',
         platforms: ['win32', 'darwin', 'linux'],
@@ -106,12 +118,31 @@ export const games: GameDefinition[] = [
         getCloudRoot: asteroidCloudRoot
     },
     {
+        id: 'hunt-for-gods',
+        appId: '576940',
+        name: 'Hunt For Gods',
+        volumeName: 'Pantheon',
+        quotaBytes: LARGE_QUOTA,
+        installSizeFallbackBytes: 4.25 * GIB,
+        maxFiles: 10_000,
+        cloudPattern: '* · recursive · ItemSets',
+        platforms: ['win32', 'linux'],
+        nativeCloudPlatforms: ['win32'],
+        protonExperimental: true,
+        storeUrl: 'https://store.steampowered.com/app/576940/Hunt_For_Gods/',
+        steamInstallUrl: 'steam://install/576940',
+        steamRunUrl: 'steam://run/576940',
+        processHints: ['HuntForGods', 'Hunt For Gods'],
+        windowHints: ['Hunt For Gods', 'HuntForGods'],
+        getCloudRoot: huntForGodsCloudRoot
+    },
+    {
         id: 'world-of-shooting',
         appId: '1678150',
         name: 'World of Shooting',
         volumeName: 'Range',
         quotaBytes: LARGE_QUOTA,
-        installSizeFallbackBytes: 20 * GIB,
+        installSizeFallbackBytes: 12.53 * GIB,
         maxFiles: 10_000,
         cloudPattern: '*.* · recursive · CustomLevels',
         platforms: ['win32', 'linux'],
