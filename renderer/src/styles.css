@@ -163,6 +163,13 @@ header button, header a, header input {
     white-space: nowrap;
     text-overflow: ellipsis;
 }
+.volume-size {
+    flex: 0 0 auto;
+    color: var(--faint);
+    font-size: 9px;
+    font-weight: 500;
+    white-space: nowrap;
+}
 .volume-usage {
     justify-self: end;
     color: #b6b7b4;

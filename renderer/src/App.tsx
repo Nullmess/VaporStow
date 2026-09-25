@@ -74,6 +74,10 @@ function quotaLabel(bytes: number): string {
     return `${(bytes / GIB).toFixed(2)} GiB`;
 }
 
+function cloudSpaceLabel(bytes: number): string {
+    return `${(bytes / GIB).toFixed(2)} GB`;
+}
+
 function requiredSpaceLabel(bytes: number): string {
     if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
     if (bytes >= GIB) return `${(bytes / GIB).toFixed(2)} GiB`;
@@ -783,8 +787,8 @@ function Modal({
         );
     } else if (active.kind === 'open') {
         const game = active.game;
-        const firstOpen = game.rememberedBytes === null;
-        const required = firstOpen ? game.quotaBytes : game.rememberedBytes || 0;
+        const rememberedCloud = game.rememberedBytes ?? game.quotaBytes;
+        const required = rememberedCloud;
         const available = game.disk?.free ?? null;
         const cloudFolderExists = game.cloudRootExists;
         const enough = cloudFolderExists || game.running || (available !== null && available >= required);
@@ -797,14 +801,9 @@ function Modal({
                         <p className="modal-copy">
                             The local Cloud folder is missing. Steam will restore the Cloud files before the game starts.
                         </p>
-                        <p className="modal-copy subtle">
-                            {firstOpen
-                                ? `Current usage is unknown. VaporStow checks against the full ${quotaLabel(game.quotaBytes)} quota.`
-                                : `Last remembered usage: ${formatBytes(game.rememberedBytes || 0)} · ${remainingFileSlots(game, false)?.toLocaleString() ?? '?'} file slots left.`}
-                        </p>
                         <div className="space-check">
-                            <span>Required</span><strong>{formatBytes(required)}</strong>
-                            <span>Available</span><strong>{available === null ? 'Unknown' : formatBytes(available)}</strong>
+                            <span>Remembered Cloud quota</span><strong>{game.rememberedBytes === null ? cloudSpaceLabel(game.quotaBytes) : requiredSpaceLabel(rememberedCloud)}</strong>
+                            <span>Total Cloud space</span><strong>{cloudSpaceLabel(game.quotaBytes)}</strong>
                         </div>
                     </>
                 )}
@@ -1632,6 +1631,7 @@ export default function App() {
                                         <div className="volume-name">
                                             <span className={`status-dot ${statusTone(game)}`} />
                                             <strong>{game.name}</strong>
+                                            <span className="volume-size">{requiredSpaceLabel(game.installSize)}</span>
                                         </div>
                                         <span className="volume-usage">{usageLabel(game, false)}</span>
                                         <button
