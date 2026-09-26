@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-    <img src="assets/desktop.png" alt="VaporStow preview">
+    <img src="assets/desktop.gif" alt="VaporStow preview">
 </p>
 
 ---
