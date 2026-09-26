@@ -40,7 +40,7 @@ jobs:
               run: npm run build
 
             - name: Build DMG
-              run: npm run package:mac
+              run: npx electron-builder --publish never --mac --x64 -c.directories.output=release/VaporStow-macos-x64
 
             - name: Create ZIP
               shell: bash
