@@ -1,0 +1,35 @@
+name: Build macOS
+
+on:
+    workflow_dispatch:
+
+jobs:
+    build-mac:
+        name: macOS x64
+        runs-on: macos-15-intel
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Typecheck
+              run: npm run typecheck
+
+            - name: Build package
+              run: npm run build-mac
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: VaporStow-macos-x64
+                  path: release/VaporStow-macos-x64/*
+                  if-no-files-found: error
