@@ -1,0 +1,54 @@
+name: Build release
+
+on:
+    workflow_dispatch:
+
+jobs:
+    build:
+        name: ${{ matrix.name }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: Windows x64
+                      os: windows-latest
+                      command: npm run build-win
+                      artifact: VaporStow-windows-x64
+                      path: release/VaporStow-windows-x64/*
+                    - name: Linux x64
+                      os: ubuntu-latest
+                      command: npm run build-lin
+                      artifact: VaporStow-linux-x64
+                      path: release/VaporStow-linux-x64/*
+                    - name: macOS x64
+                      os: macos-15-intel
+                      command: npm run build-mac
+                      artifact: VaporStow-macos-x64
+                      path: release/VaporStow-macos-x64/*
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Typecheck
+              run: npm run typecheck
+
+            - name: Build package
+              run: ${{ matrix.command }}
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.artifact }}
+                  path: ${{ matrix.path }}
+                  if-no-files-found: error

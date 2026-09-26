@@ -27,10 +27,11 @@
     "package:mac": "electron-builder --mac --x64 -c.directories.output=release/VaporStow-macos-x64",
     "package:lin": "electron-builder --linux --x64 -c.directories.output=release/VaporStow-linux-x64",
     "build-win": "npm run build && rimraf release/VaporStow-windows-x64 && npm run package:win",
-    "build-mac": "npm run build && rimraf release/VaporStow-macos-x64 && npm run package:mac",
+    "build-mac": "node scripts/build-mac.mjs",
     "build-lin": "npm run build && rimraf release/VaporStow-linux-x64 && npm run package:lin",
     "app": "npm run build && electron .",
-    "build-all": "npm run build && rimraf release && npm run package:win && npm run package:lin && npm run package:mac"
+    "build-all": "node scripts/build-all.mjs",
+    "build:mac-native": "npm run build && rimraf release/VaporStow-macos-x64 && npm run package:mac"
   },
   "dependencies": {
     "react": "19.1.1",

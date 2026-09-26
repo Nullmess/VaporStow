@@ -85,11 +85,7 @@ npm run build
 npm run build-win
 ```
 
-Output:
-
-```text
-release/VaporStow-windows-x64/
-```
+Output:  `release/VaporStow-windows-x64/`
 
 #### Linux
 
@@ -97,31 +93,27 @@ release/VaporStow-windows-x64/
 npm run build-lin
 ```
 
-Output:
-
-```text
-release/VaporStow-linux-x64/
-```
+Output: `release/VaporStow-linux-x64/`
 
 #### macOS
+
+The DMG must be packaged on macOS:
 
 ```shell
 npm run build-mac
 ```
 
-Output:
-
-```text
-release/VaporStow-macos-x64/
-```
+Output: `release/VaporStow-macos-x64/`
 
 #### All targets
 
-```shell
-npm run build-all
-```
+Local platform commands remain available individually:
 
-Each platform is packaged into its own directory under `release/`.
+```shell
+npm run build-win
+npm run build-lin
+npm run build-mac
+```
 
 ### Clean
 
