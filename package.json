@@ -1,6 +1,6 @@
 {
   "name": "vaporstow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Cross-platform desktop client for managing files in supported Steam Cloud locations.",
   "author": "Nullmess & Ybucaille",

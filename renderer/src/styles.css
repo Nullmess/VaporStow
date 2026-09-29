@@ -55,11 +55,11 @@ code {
 
 header {
     position: relative;
-    flex: 0 0 34px;
+    flex: 0 0 42px;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: flex-end;
-    margin-bottom: 18px;
+    margin-bottom: 10px;
     -webkit-app-region: drag;
     user-select: none;
 }
@@ -83,8 +83,9 @@ header button, header a, header input {
     padding: 0;
     background: transparent;
     color: var(--muted);
-    font-size: 10px;
+    font-size: clamp(10px, .62vw, 12px);
     cursor: default;
+    transform: translateY(2px);
 }
 .steam.missing {
     cursor: pointer;
@@ -113,7 +114,7 @@ header button, header a, header input {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: stage-in .30s var(--motion) both;
+    animation: stage-in .30s var(--motion);
 }
 
 .steam-required {
@@ -136,16 +137,19 @@ header button, header a, header input {
     min-height: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    gap: clamp(22px, 3.5vh, 38px);
+    justify-content: flex-start;
+    gap: clamp(28px, 4vh, 48px);
+    padding-top: clamp(2px, 0.6vh, 8px);
 }
 
 .cloud-carousel {
-    --carousel-card-width: 320px;
-    --carousel-slot: 352px;
+    --carousel-card-width: 300px;
+    --carousel-card-height: 375px;
+    --carousel-art-size: 128px;
+    --carousel-slot: 334px;
     position: relative;
     width: 100%;
-    height: clamp(360px, 56vh, 560px);
+    height: clamp(400px, 60vh, 620px);
     overflow: hidden;
     isolation: isolate;
     cursor: grab;
@@ -180,13 +184,14 @@ header button, header a, header input {
     left: 50%;
     top: 50%;
     width: var(--carousel-card-width);
-    min-height: clamp(310px, 48vh, 470px);
-    padding: clamp(22px, 3vw, 34px) clamp(18px, 2.3vw, 28px) clamp(18px, 2.5vw, 26px);
+    height: var(--carousel-card-height);
+    min-height: var(--carousel-card-height);
+    padding: clamp(24px, 3vw, 36px) clamp(20px, 2.5vw, 30px) clamp(22px, 2.7vw, 30px);
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
-    gap: clamp(12px, 2vh, 20px);
+    gap: clamp(14px, 2.2vh, 22px);
     border: 1px solid var(--line);
     border-radius: clamp(18px, 2vw, 28px);
     background: linear-gradient(180deg, #111419 0%, #0c0e11 100%);
@@ -222,21 +227,24 @@ header button, header a, header input {
     box-shadow: 0 0 0 3px #111419;
 }
 .cloud-card-art {
+    --art-width-factor: 1;
+    --art-height-factor: 1;
     position: relative;
-    width: clamp(112px, 11vw, 160px);
-    height: clamp(112px, 11vw, 160px);
+    width: calc(var(--carousel-art-size) * var(--art-width-factor));
+    height: calc(var(--carousel-art-size) * var(--art-height-factor));
     margin-top: clamp(2px, 1vh, 10px);
     display: grid;
     place-items: center;
     overflow: hidden;
     border: 1px solid #303641;
-    border-radius: clamp(20px, 2.2vw, 30px);
+    border-radius: 18%;
     background: #15181c;
     color: #74787f;
     font-size: clamp(22px, 2.2vw, 32px);
     font-weight: 700;
     letter-spacing: .04em;
     box-shadow: 0 12px 30px rgba(0, 0, 0, .22);
+    transition: border-radius .18s ease;
 }
 .cloud-card-art img {
     position: absolute;
@@ -244,6 +252,7 @@ header button, header a, header input {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    object-position: center center;
     pointer-events: none;
 }
 .cloud-card-title {
@@ -258,7 +267,7 @@ header button, header a, header input {
     min-width: 0;
     overflow: hidden;
     color: var(--text);
-    font-size: clamp(15px, 1.5vw, 21px);
+    font-size: clamp(16px, 1.45vw, 21px);
     font-weight: 650;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -277,7 +286,7 @@ header button, header a, header input {
     justify-content: center;
     gap: 5px;
     color: #9a9da2;
-    font-size: clamp(10px, 1vw, 13px);
+    font-size: clamp(11px, .96vw, 13px);
     line-height: 1.3;
     white-space: nowrap;
 }
@@ -289,7 +298,7 @@ header button, header a, header input {
     border-radius: 7px;
     background: #12151a;
     color: #d2d4d1;
-    font-size: clamp(11px, 1vw, 14px);
+    font-size: clamp(12px, .96vw, 14px);
     cursor: pointer;
     transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
 }
@@ -308,43 +317,20 @@ header button, header a, header input {
 
 @media (max-width: 900px) {
     .cloud-carousel {
-        height: clamp(340px, 54vh, 500px);
+        height: clamp(380px, 56vh, 540px);
     }
     .cloud-card {
-        min-height: clamp(290px, 46vh, 420px);
+        height: var(--carousel-card-height);
+        min-height: var(--carousel-card-height);
     }
 }
 
 @media (max-width: 680px) {
     .cloud-carousel {
-        height: clamp(330px, 52vh, 470px);
+        height: clamp(360px, 54vh, 500px);
     }
 }
 
-.home-search-trigger {
-    width: min(900px, calc(100% - 48px));
-    min-height: clamp(38px, 5vh, 48px);
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 9px;
-    border: 1px solid #252a31;
-    border-radius: 8px;
-    background: #0e1013;
-    color: #656970;
-    font-size: clamp(10px, .9vw, 12px);
-    cursor: pointer;
-    transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
-}
-.home-search-trigger:hover {
-    border-color: #3b424b;
-    background: #12161a;
-    color: #a4a6aa;
-}
-.home-search-trigger:active:not(:disabled) {
-    transform: translateY(1px);
-}
 
 @media (max-width: 680px) {
     .shell {
@@ -538,7 +524,7 @@ header button, header a, header input {
 }
 .file-icon {
     color: var(--faint);
-    font-size: 11px;
+    font-size: 13px;
 }
 .file-name {
     overflow: hidden;
@@ -859,7 +845,7 @@ header button, header a, header input {
     min-height: 40px;
     padding: 0 15px;
     border: 1px solid #30353d;
-    border-radius: 8px;
+    border-radius: 12px;
     background: #14171b;
     color: #c9cbc9;
     cursor: pointer;
@@ -1002,14 +988,8 @@ header button, header a, header input {
 }
 
 @keyframes stage-in {
-    from {
-        opacity: 0;
-        transform: translateY(5px) scale(.997);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-    }
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 @keyframes row-in {
     from {
@@ -1471,7 +1451,7 @@ header button, header a, header input {
     position: relative;
 }
 .linux-shell header {
-    padding-right: 112px;
+    padding-right: 0;
 }
 .linux-window-controls {
     position: fixed;
@@ -1496,6 +1476,23 @@ header button, header a, header input {
     cursor: pointer;
     transition: background .16s ease, color .16s ease, transform .16s ease;
 }
+.linux-window-controls .window-steam {
+    width: auto;
+    min-width: 0;
+    height: 30px;
+    padding: 0 7px 0 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: 7px;
+    font-size: 10px;
+    transform: none;
+}
+.linux-window-controls .window-steam i {
+    width: 6px;
+    height: 6px;
+}
 .linux-window-controls button:hover,
 .linux-window-controls button.active {
     background: rgba(255, 255, 255, .055);
@@ -1507,6 +1504,25 @@ header button, header a, header input {
 }
 .linux-window-controls button:active {
     transform: scale(.92);
+}
+
+/* When browsing an opened Cloud, the Linux window controls are fixed and the
+   regular header is empty. Collapse that reserved header space so the Cloud
+   panel can sit directly beneath the window controls instead of starting far
+   below them. The home layout keeps its original spacing. */
+.linux-shell.cloud-open-shell {
+    padding-top: 50px;
+}
+.linux-shell.cloud-open-shell header {
+    flex: 0 0 0;
+    height: 0;
+    min-height: 0;
+    margin: 0;
+    overflow: hidden;
+}
+.linux-shell.cloud-open-shell .stage {
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 /* Lightweight ambient motion for the home screen. No video, canvas or shader. */
@@ -1546,36 +1562,24 @@ header button, header a, header input {
 }
 
 
-/* Keep the home hidden until the splash has fully left the screen. */
-.shell.intro-pending header,
-.shell.intro-pending .stage {
+/* Startup is one coherent transition: splash -> complete application.
+   The shell never reveals individual controls/cards separately, which prevents
+   first-frame flashes and duplicate intro animations while status is loading. */
+.shell.intro-pending {
     opacity: 0;
     pointer-events: none;
 }
-.shell.intro-pending .cloud-card {
-    opacity: 0 !important;
-    visibility: hidden;
-}
-.shell.intro-revealing header {
-    animation: home-header-reveal .34s var(--motion) both;
-}
-.shell.intro-revealing .home-search-trigger {
-    animation: home-search-reveal .42s .82s var(--motion) both;
-}
-.shell.intro-revealing .stage {
+.shell.intro-revealing {
     pointer-events: none;
+    animation: home-shell-reveal .44s .05s cubic-bezier(.22, .8, .25, 1) both;
 }
-.shell.intro-revealing .cloud-card {
-    pointer-events: none;
+.shell.intro-ready {
+    opacity: 1;
 }
 
-@keyframes home-header-reveal {
-    from { opacity: 0; transform: translateY(-8px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-@keyframes home-search-reveal {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+@keyframes home-shell-reveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 /* Splash leaves the stage instead of being replaced abruptly. */
@@ -1592,12 +1596,6 @@ header button, header a, header input {
 }
 .startup-splash.exiting .startup-glow {
     animation: startup-glow-exit .52s ease both;
-}
-
-/* On first reveal: left card, right card, then the focused center card. */
-.cloud-carousel.intro-reveal .cloud-card {
-    animation: home-card-reveal .62s var(--motion) both;
-    animation-delay: var(--intro-delay, 0ms);
 }
 
 @keyframes startup-exit {
@@ -1617,23 +1615,6 @@ header button, header a, header input {
     from { opacity: 1; transform: scale(1); }
     to { opacity: 0; transform: scale(1.18); }
 }
-@keyframes home-card-reveal {
-    0% {
-        opacity: 0;
-        transform: translate3d(calc(-50% + var(--card-x, 0px)), calc(-50% + 24px), 0) scale(calc(var(--card-scale, .84) * .88));
-        filter: blur(9px) saturate(var(--card-saturation, .62)) brightness(calc(var(--card-brightness, .58) * .68));
-    }
-    58% {
-        opacity: var(--card-opacity, .08);
-        transform: translate3d(calc(-50% + var(--card-x, 0px)), calc(-50% - 4px), 0) scale(calc(var(--card-scale, .84) * 1.025));
-        filter: blur(0) saturate(var(--card-saturation, .62)) brightness(var(--card-brightness, .58));
-    }
-    100% {
-        opacity: var(--card-opacity, .08);
-        transform: translate3d(calc(-50% + var(--card-x, 0px)), -50%, 0) scale(var(--card-scale, .84));
-        filter: blur(0) saturate(var(--card-saturation, .62)) brightness(var(--card-brightness, .58));
-    }
-}
 @keyframes home-ambient-a {
     0% { transform: translate3d(0, 0, 0) scale(1); }
     45% { transform: translate3d(9vw, 5vh, 0) scale(1.07); }
@@ -1648,14 +1629,16 @@ header button, header a, header input {
 @media (prefers-reduced-motion: reduce) {
     .home-clouds::before,
     .home-clouds::after,
-    .cloud-carousel.intro-reveal .cloud-card,
     .startup-splash.exiting,
     .startup-splash.exiting .startup-logo,
     .startup-splash.exiting .startup-wordmark,
     .startup-splash.exiting .startup-loader,
-    .startup-splash.exiting .startup-glow {
+    .startup-splash.exiting .startup-glow,
+    .shell.intro-revealing {
         animation: none !important;
     }
+    .startup-splash.exiting { opacity: 0; }
+    .shell.intro-revealing { opacity: 1; }
 }
 
 /* Keep the startup animation above the already-rendered home screen. */
@@ -2901,10 +2884,6 @@ header button, header a, header input {
     transform: translateX(-50%);
 }
 
-.home-search-placeholder {
-    visibility: hidden;
-    pointer-events: none;
-}
 
 .cloud-carousel.operation-mode {
     cursor: default;
@@ -3130,12 +3109,8 @@ header button, header a, header input {
     opacity: 1 !important;
     transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
 }
-.cloud-operation-active .home-search-placeholder {
-    opacity: 0;
-    visibility: hidden;
-}
 .cloud-card-normal-content {
-    gap: clamp(12px, 2vh, 20px);
+    gap: clamp(14px, 2.2vh, 22px);
 }
 .cloud-card-normal-content .cloud-card-usage {
     margin-top: 0;
@@ -3515,21 +3490,18 @@ header button, header a, header input {
     display: none;
 }
 
-/* Keep the exact same card geometry during normal and Cloud-loading states. */
-.cloud-carousel {
-    --carousel-card-height: 360px;
-    --carousel-art-size: 132px;
-}
+/* Keep normal and Cloud-loading states on the same responsive geometry. */
 .cloud-card {
     height: var(--carousel-card-height);
     min-height: 0;
-    max-height: calc(100% - 12px);
+    max-height: none;
     overflow: hidden;
 }
 .cloud-card-art {
-    width: var(--carousel-art-size);
-    height: var(--carousel-art-size);
-    flex: 0 0 var(--carousel-art-size);
+    /* Width and height come from the real artwork aspect ratio above. */
+    flex: 0 0 auto;
+    max-width: var(--carousel-art-size);
+    max-height: var(--carousel-art-size);
 }
 .cloud-card-content-stack {
     min-height: 0;
@@ -3543,23 +3515,132 @@ header button, header a, header input {
     overflow: hidden;
 }
 @media (max-height: 620px) {
-    .cloud-card {
-        padding-top: 16px;
+    .shell {
+        padding-top: 32px;
         padding-bottom: 16px;
+    }
+    header {
+        flex-basis: 36px;
+        margin-bottom: 6px;
+    }
+    .home-clouds {
         gap: 10px;
+        padding-top: 0;
+    }
+    .home-cloud-controls-row {
+        min-height: 48px;
+    }
+    .home-cloud-filters button {
+        min-height: 44px;
+        padding-inline: 17px;
+        font-size: 12px;
+    }
+    .home-cloud-search {
+        width: 44px;
+        height: 44px;
+    }
+    .home-cloud-search-toggle {
+        flex-basis: 42px;
+        width: 42px;
+        height: 42px;
+    }
+    .cloud-card {
+        padding: 12px 15px;
+        gap: 6px;
+    }
+    .cloud-card-art {
+        max-width: calc(var(--carousel-art-size) * 0.88);
+        max-height: calc(var(--carousel-art-size) * 0.88);
+    }
+    .cloud-card-content-stack {
+        min-height: 108px;
     }
     .cloud-card-normal-content,
-    .cloud-card-loading-content {
-        gap: 10px;
-    }
+    .cloud-card-loading-content,
     .cloud-loading-card .cloud-card-loading-content {
-        gap: 10px;
+        gap: 6px;
+    }
+    .cloud-card-title.compact-title strong {
+        font-size: 15px;
+    }
+    .cloud-card-title span {
+        font-size: 10px;
+    }
+    .cloud-card-normal-content .cloud-card-usage {
+        margin-top: 4px;
+    }
+    .cloud-card-usage {
+        min-height: 34px;
+        gap: 2px;
+        font-size: 11px;
+        line-height: 1.22;
+    }
+    .cloud-card-normal-content > button {
+        min-height: 34px;
+        font-size: 12px;
     }
     .cloud-loading-logtext {
-        font-size: 11px;
+        font-size: 10px;
     }
     .cloud-loading-orbit {
-        transform: scale(.9);
+        transform: scale(.80);
+    }
+}
+@media (max-height: 550px) {
+    .shell {
+        padding-top: 28px;
+        padding-bottom: 10px;
+    }
+    header {
+        flex-basis: 30px;
+        margin-bottom: 4px;
+    }
+    .home-cloud-controls-row {
+        min-height: 42px;
+    }
+    .home-cloud-filters button {
+        min-height: 40px;
+        padding-inline: 14px;
+        font-size: 11px;
+    }
+    .home-cloud-search {
+        width: 40px;
+        height: 40px;
+    }
+    .home-cloud-search-toggle {
+        flex-basis: 38px;
+        width: 38px;
+        height: 38px;
+    }
+    .cloud-card {
+        padding: 9px 12px;
+        gap: 5px;
+    }
+    .cloud-card-art {
+        max-width: calc(var(--carousel-art-size) * 0.76);
+        max-height: calc(var(--carousel-art-size) * 0.76);
+    }
+    .cloud-card-content-stack {
+        min-height: 100px;
+    }
+    .cloud-card-title.compact-title strong {
+        font-size: 14px;
+    }
+    .cloud-card-title span {
+        font-size: 10px;
+    }
+    .cloud-card-normal-content .cloud-card-usage {
+        margin-top: 3px;
+    }
+    .cloud-card-usage {
+        min-height: 34px;
+        gap: 2px;
+        font-size: 10.5px;
+        line-height: 1.18;
+    }
+    .cloud-card-normal-content > button {
+        min-height: 31px;
+        font-size: 11px;
     }
 }
 
@@ -3925,5 +4006,446 @@ header button, header a, header input {
     }
     .github-profile-button {
         min-width: 92px;
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Dynamic Steam Cloud home browser
+   -------------------------------------------------------------------------- */
+.home-clouds {
+    gap: clamp(14px, 2.2vh, 24px);
+}
+
+.home-cloud-controls {
+    width: min(1180px, calc(100% - 36px));
+    margin: 0 auto;
+    padding-top: 2px;
+    display: flex;
+    flex-direction: column;
+    transition: opacity .22s ease, transform .22s ease;
+}
+.home-cloud-controls.operation-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: none;
+}
+.home-clouds > .cloud-carousel,
+.home-clouds > .home-cloud-empty {
+    width: 100%;
+}
+.home-clouds > .cloud-carousel {
+    /* Do not let a tall window create a huge empty gap above the cards. */
+    flex: 0 1 560px;
+    align-self: stretch;
+    height: 560px;
+    max-height: 560px;
+    min-height: 0;
+}
+.home-cloud-controls-row {
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding-inline: 6px;
+}
+.home-cloud-filters {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+.home-cloud-filters button {
+    min-height: clamp(46px, 3vw, 52px);
+    padding: 0 clamp(17px, 1.35vw, 24px);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #252b33;
+    border-radius: 8px;
+    background: #0e1013;
+    color: #858b94;
+    font: inherit;
+    font-size: clamp(12px, .72vw, 14px);
+    cursor: pointer;
+    transition: color .15s ease, background .15s ease, border-color .15s ease, transform .15s ease;
+}
+.home-cloud-filters button:hover:not(:disabled) {
+    border-color: #3b444f;
+    color: #c2c6cc;
+    background: #14181d;
+}
+.home-cloud-filters button.active {
+    border-color: #465260;
+    background: #181d23;
+    color: #e5e8eb;
+}
+.home-cloud-filters button:active:not(:disabled) {
+    transform: translateY(1px);
+}
+.home-cloud-filters button:disabled {
+    cursor: default;
+}
+
+.home-cloud-search {
+    flex: 0 0 auto;
+    width: clamp(46px, 3vw, 52px);
+    height: clamp(46px, 3vw, 52px);
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    overflow: hidden;
+    border: 1px solid #252b33;
+    border-radius: 8px;
+    background: #0e1013;
+    color: #60666f;
+    transition: width .28s var(--motion), border-color .15s ease, background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.home-cloud-search.expanded {
+    width: 272px;
+}
+.home-cloud-search.expanded,
+.home-cloud-search:focus-within {
+    border-color: #46505d;
+    background: #111419;
+    color: #aeb4bb;
+    box-shadow: 0 0 0 3px rgba(98, 116, 142, .08);
+}
+.home-cloud-search-toggle {
+    flex: 0 0 clamp(44px, 2.9vw, 50px);
+    width: clamp(44px, 2.9vw, 50px);
+    height: clamp(44px, 2.9vw, 50px);
+    min-height: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: #7b828c;
+    cursor: pointer;
+    transition: color .15s ease, background .15s ease;
+}
+.home-cloud-search-toggle:hover:not(:disabled) {
+    color: #c5cad0;
+    background: rgba(255, 255, 255, .025);
+}
+.home-cloud-search input {
+    flex: 1 1 auto;
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #d6d9dc;
+    font: inherit;
+    font-size: 13px;
+    transition: opacity .16s ease;
+}
+.home-cloud-search.expanded input {
+    width: auto;
+    opacity: 1;
+    pointer-events: auto;
+    padding: 0 14px 0 4px;
+}
+.home-cloud-search input::placeholder {
+    color: #5e646c;
+}
+.home-cloud-search input:disabled {
+    cursor: default;
+}
+
+.cloud-card > .cloud-card-favorite {
+    position: absolute;
+    top: clamp(12px, 1.6vw, 19px);
+    left: clamp(12px, 1.6vw, 19px);
+    z-index: 8;
+    width: 31px;
+    height: 31px;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    background: rgba(10, 12, 15, .58);
+    color: #686f78;
+    opacity: .78;
+    cursor: pointer;
+    backdrop-filter: blur(7px);
+    transition: opacity .15s ease, color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.cloud-card > .cloud-card-favorite:hover:not(:disabled),
+.cloud-card > .cloud-card-favorite:focus-visible {
+    border-color: #414a56;
+    background: rgba(23, 27, 33, .94);
+    color: #c4c9cf;
+    opacity: 1;
+    outline: none;
+}
+.cloud-card > .cloud-card-favorite.active {
+    border-color: #4b5360;
+    background: rgba(27, 31, 37, .96);
+    color: #d5d8db;
+    opacity: 1;
+}
+.cloud-card > .cloud-card-favorite:active:not(:disabled) {
+    transform: scale(.92);
+}
+.cloud-card.focused > .cloud-card-favorite {
+    border-color: transparent;
+    background: rgba(10, 12, 15, .62);
+}
+.cloud-card.focused > .cloud-card-favorite:hover:not(:disabled),
+.cloud-card.focused > .cloud-card-favorite.active {
+    border-color: #4b5360;
+    background: rgba(27, 31, 37, .96);
+}
+.cloud-loading-card > .cloud-card-favorite {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.home-cloud-empty {
+    width: min(760px, calc(100% - 44px));
+    flex: 1 1 auto;
+    min-height: clamp(300px, 50vh, 500px);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: #5f6670;
+    text-align: center;
+}
+.home-cloud-empty svg {
+    margin-bottom: 5px;
+    color: #555d68;
+}
+.home-cloud-empty strong {
+    color: #aeb3b9;
+    font-size: 13px;
+    font-weight: 600;
+}
+.home-cloud-empty span {
+    max-width: 420px;
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+    .home-cloud-controls {
+        width: min(900px, calc(100% - 24px));
+        margin-top: 0;
+    }
+    .home-cloud-controls-row {
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+    .home-cloud-filters {
+        max-width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+    .home-cloud-filters::-webkit-scrollbar {
+        display: none;
+    }
+    .home-cloud-filters button {
+        flex: 0 0 auto;
+    }
+}
+
+@media (max-width: 560px) {
+    .home-cloud-controls {
+        width: calc(100% - 8px);
+    }
+    .home-cloud-filters button {
+        min-height: 44px;
+        padding-inline: 12px;
+        font-size: 12px;
+    }
+    .home-cloud-search {
+        width: 44px;
+        height: 44px;
+    }
+    .home-cloud-search-toggle {
+        flex-basis: 42px;
+        width: 42px;
+        height: 42px;
+    }
+    .home-cloud-search.expanded {
+        width: min(240px, calc(100vw - 28px));
+    }
+}
+
+
+/* --------------------------------------------------------------------------
+   Stable inner layout for responsive home cards
+   Keep the outer carousel geometry unchanged; only the card contents scale.
+   -------------------------------------------------------------------------- */
+.cloud-card {
+    padding: var(--carousel-card-padding, 18px);
+    gap: var(--carousel-card-gap, 10px);
+}
+.cloud-card-art {
+    margin-top: 0;
+    width: calc(var(--carousel-art-size) * var(--art-width-factor));
+    height: calc(var(--carousel-art-size) * var(--art-height-factor));
+    max-width: var(--carousel-art-size);
+    max-height: var(--carousel-art-size);
+    flex: 0 0 auto;
+}
+.cloud-card-content-stack {
+    flex: 1 1 0;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+.cloud-card-normal-content {
+    height: 100%;
+    min-height: 0;
+    justify-content: space-between;
+    gap: 8px;
+}
+.cloud-card-details {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: clamp(5px, 1vh, 9px);
+    padding-top: clamp(1px, .45vh, 5px);
+}
+.cloud-card-title.compact-title strong {
+    font-size: var(--carousel-title-size, 18px);
+    line-height: 1.16;
+}
+.cloud-card-normal-content .cloud-card-usage,
+.cloud-card-usage {
+    min-height: 0;
+    margin-top: 0;
+    gap: 3px;
+    font-size: var(--carousel-meta-size, 12px);
+    line-height: 1.28;
+}
+.cloud-card-normal-content > button {
+    flex: 0 0 auto;
+    min-height: var(--carousel-action-height, 44px);
+    height: var(--carousel-action-height, 44px);
+    margin-top: 0;
+    font-size: var(--carousel-action-size, 13px);
+}
+
+/* On very short windows, preserve readable labels and reclaim space from art. */
+@media (max-height: 620px) {
+    .cloud-card-art {
+        width: calc(var(--carousel-art-size) * var(--art-width-factor) * .92);
+        height: calc(var(--carousel-art-size) * var(--art-height-factor) * .92);
+        max-width: calc(var(--carousel-art-size) * .92);
+        max-height: calc(var(--carousel-art-size) * .92);
+    }
+    .cloud-card-details {
+        gap: 4px;
+        padding-top: 0;
+    }
+}
+@media (max-height: 550px) {
+    .cloud-card-art {
+        width: calc(var(--carousel-art-size) * var(--art-width-factor) * .84);
+        height: calc(var(--carousel-art-size) * var(--art-height-factor) * .84);
+        max-width: calc(var(--carousel-art-size) * .84);
+        max-height: calc(var(--carousel-art-size) * .84);
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Home vertical centering
+   Controls stay anchored in the first row; cards stay centered in the entire
+   remaining viewport, even on very tall windows.
+   -------------------------------------------------------------------------- */
+.home-clouds {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    align-items: stretch;
+    justify-content: stretch;
+    gap: clamp(14px, 2.2vh, 24px);
+}
+.home-cloud-controls {
+    grid-row: 1;
+    align-self: start;
+}
+.home-clouds > .cloud-carousel,
+.home-clouds > .home-cloud-empty {
+    grid-row: 2;
+    align-self: center;
+    justify-self: stretch;
+    margin-block: auto;
+}
+.home-clouds > .cloud-carousel {
+    flex: none;
+    width: 100%;
+    height: min(560px, 100%);
+    max-height: 560px;
+    min-height: 0;
+}
+.home-clouds > .home-cloud-empty {
+    width: 100%;
+    min-height: 0;
+    height: min(500px, 100%);
+}
+
+@media (max-height: 620px) {
+    .home-clouds {
+        gap: 8px;
+    }
+    .home-clouds > .cloud-carousel {
+        height: 100%;
+        max-height: 100%;
+    }
+}
+
+/* --------------------------------------------------------------------------
+   True viewport-Y centering for the home carousel
+   On normal/tall windows the cards are centered on the actual window midpoint,
+   not on the leftover area below the filter row. Compact heights keep the
+   in-flow layout so controls and cards can never overlap.
+   -------------------------------------------------------------------------- */
+@media (min-height: 621px) {
+    .home-clouds > .cloud-carousel {
+        position: fixed;
+        top: var(--home-carousel-center-y, 50vh);
+        left: clamp(22px, 4vw, 42px);
+        right: clamp(22px, 4vw, 42px);
+        width: auto;
+        height: min(560px, calc(100vh - 170px));
+        max-height: min(560px, calc(100vh - 170px));
+        margin: 0;
+        transform: translateY(-50%);
+        z-index: 1;
+    }
+
+    .home-cloud-controls {
+        position: relative;
+        z-index: 2;
+    }
+}
+
+@media (max-height: 620px) {
+    .home-clouds > .cloud-carousel {
+        position: relative;
+        top: auto;
+        left: auto;
+        right: auto;
+        width: 100%;
+        transform: none;
+        margin-block: auto;
     }
 }

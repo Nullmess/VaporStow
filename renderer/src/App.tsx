@@ -5,6 +5,7 @@ import startupLogo from './assets/logo.png';
 type GameId = GameStatus['id'];
 type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
 type NavDirection = 'forward' | 'back' | 'same';
+type HomeCloudFilter = 'all' | 'favorites' | 'installed' | 'not-installed';
 
 type ModalState =
     | null
@@ -28,6 +29,7 @@ type ExplorerSelection = AuditEntry | {
 
 const GIB = 1024 ** 3;
 const AFK_TIMEOUT_MS = 10 * 60 * 1000;
+const FAVORITE_CLOUDS_STORAGE_KEY = 'vaporstow.favorite-clouds.v1';
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -180,6 +182,24 @@ function SearchIcon({ size = 12 }: { size?: number }) {
         >
             <circle cx="11" cy="11" r="6" />
             <path d="M16 16l4 4" />
+        </svg>
+    );
+}
+
+function FavoriteIcon({ active = false, size = 15 }: { active?: boolean; size?: number }) {
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill={active ? 'currentColor' : 'none'}
+            stroke="currentColor"
+            strokeWidth="1.65"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="m12 3 2.78 5.63 6.22.9-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.92 1.06-6.2L3 9.53l6.22-.9L12 3Z" />
         </svg>
     );
 }
@@ -412,7 +432,7 @@ function SearchModal({
                         autoFocus
                         value={query}
                         onChange={(event) => setQuery(event.target.value)}
-                        placeholder="Search Cloud…"
+                        placeholder="Search files..."
                         aria-label="Search cached Steam Cloud files and folders"
                     />
                     <span>Esc</span>
@@ -729,6 +749,19 @@ function Explorer({
     );
 }
 
+const ABOUT_CONTRIBUTORS = [
+    {
+        name: 'Nullmess',
+        username: 'nullmess',
+        avatarUrl: 'https://avatars.githubusercontent.com/u/326523721?s=160&v=4'
+    },
+    {
+        name: 'Ybucaille',
+        username: 'Ybucaille',
+        avatarUrl: 'https://avatars.githubusercontent.com/u/83926195?s=160&v=4'
+    }
+] as const;
+
 function Modal({
     modal,
     close,
@@ -963,11 +996,6 @@ function Modal({
             </>
         );
     } else if (active.kind === 'info') {
-        const contributors = [
-            { name: 'Nullmess', username: 'nullmess' },
-            { name: 'Ybucaille', username: 'Ybucaille' }
-        ];
-
         content = (
             <div className="about-modal-content">
                 <div className="about-heading">
@@ -975,13 +1003,16 @@ function Modal({
                     <span>v1.0.0</span>
                 </div>
                 <div className="about-contributors">
-                    {contributors.map((contributor) => (
+                    {ABOUT_CONTRIBUTORS.map((contributor) => (
                         <article className="about-contributor" key={contributor.username}>
                             <img
                                 className="about-avatar"
-                                src={`https://github.com/${contributor.username}.png?size=160`}
+                                src={contributor.avatarUrl}
                                 alt={`${contributor.name} GitHub avatar`}
                                 draggable={false}
+                                loading="eager"
+                                decoding="sync"
+                                fetchPriority="high"
                             />
                             <strong>{contributor.name}</strong>
                             <button
@@ -1052,12 +1083,38 @@ function gameInitials(name: string): string {
 
 function GameArtwork({ game }: { game: GameStatus }) {
     const [failed, setFailed] = useState(false);
+    const [imageRatio, setImageRatio] = useState<number | null>(null);
     const artwork = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}/library_600x900.jpg`;
 
+    useEffect(() => {
+        setFailed(false);
+        setImageRatio(null);
+    }, [game.appId]);
+
+    const artStyle = imageRatio
+        ? ({
+            '--art-width-factor': imageRatio < 1 ? imageRatio : 1,
+            '--art-height-factor': imageRatio > 1 ? 1 / imageRatio : 1
+        } as CSSProperties)
+        : undefined;
+
     return (
-        <div className="cloud-card-art" aria-hidden="true">
+        <div className="cloud-card-art" style={artStyle} aria-hidden="true">
             <span>{gameInitials(game.name)}</span>
-            {!failed && <img src={artwork} alt="" draggable={false} onError={() => setFailed(true)} />}
+            {!failed && (
+                <img
+                    src={artwork}
+                    alt=""
+                    draggable={false}
+                    onLoad={(event) => {
+                        const { naturalWidth, naturalHeight } = event.currentTarget;
+                        if (naturalWidth > 0 && naturalHeight > 0) {
+                            setImageRatio(naturalWidth / naturalHeight);
+                        }
+                    }}
+                    onError={() => setFailed(true)}
+                />
+            )}
         </div>
     );
 }
@@ -1066,7 +1123,8 @@ type CloudCarouselProps = {
     games: GameStatus[];
     actionFor: (game: GameStatus) => string;
     onAction: (game: GameStatus) => void;
-    introReveal?: boolean;
+    isFavorite: (id: GameId) => boolean;
+    onToggleFavorite: (id: GameId) => void;
     operationGame?: GameStatus | null;
     operationPhase?: Phase;
     operationDetail?: string | null;
@@ -1077,7 +1135,8 @@ function CloudCarousel({
     games,
     actionFor,
     onAction,
-    introReveal = false,
+    isFavorite,
+    onToggleFavorite,
     operationGame = null,
     operationPhase = 'closed',
     operationDetail = null,
@@ -1099,12 +1158,12 @@ function CloudCarousel({
         clickedGameIndex: null as number | null,
         clickedTarget: null as number | null
     });
-    const geometryRef = useRef({ cardWidth: 320, cardHeight: 360, artSize: 132, slot: 352 });
+    const geometryRef = useRef({ cardWidth: 300, cardHeight: 375, artSize: 128, slot: 334 });
     const suppressClickRef = useRef(false);
     const [dragging, setDragging] = useState(false);
     const [animating, setAnimating] = useState(false);
     const [position, setPosition] = useState(0);
-    const [geometry, setGeometry] = useState({ cardWidth: 320, cardHeight: 360, artSize: 132, slot: 352 });
+    const [geometry, setGeometry] = useState({ cardWidth: 300, cardHeight: 375, artSize: 128, slot: 334 });
     const [returningGameId, setReturningGameId] = useState<GameId | null>(null);
     const previousOperationGameIdRef = useRef<GameId | null>(operationGame?.id ?? null);
     const gameOrderKey = games.map((game) => game.id).join('|');
@@ -1112,12 +1171,28 @@ function CloudCarousel({
     const measure = useCallback(() => {
         const rail = railRef.current;
         if (!rail) return;
-        const width = Math.max(320, rail.clientWidth);
-        const height = Math.max(280, rail.clientHeight);
-        const cardWidth = Math.max(230, Math.min(430, width * 0.285));
-        const cardHeight = Math.max(270, Math.min(430, height * 0.82));
-        const artSize = Math.max(92, Math.min(160, cardWidth * 0.40, cardHeight * 0.34));
-        const gap = Math.max(18, Math.min(42, width * 0.03));
+        const width = Math.max(280, rail.clientWidth);
+        const height = Math.max(180, rail.clientHeight);
+
+        // Keep the focused card visually stable across window sizes. Width is no
+        // longer forced to fit three full cards into the viewport: on narrow
+        // windows the side cards are allowed to clip, like a real carousel.
+        // Height remains the only hard constraint so nothing can be cut vertically.
+        const cardAspect = 0.80; // width / height
+        const availableHeight = Math.max(150, height - 16);
+        const preferredHeight = 425;
+        const cardHeight = Math.round(Math.min(preferredHeight, availableHeight));
+        const cardWidth = Math.round(cardHeight * cardAspect);
+        const compactness = Math.max(0, Math.min(1, (360 - cardHeight) / 150));
+        const artSize = Math.round(Math.max(82, Math.min(184, cardHeight * (0.43 - compactness * 0.05))));
+        const gap = Math.round(Math.max(18, Math.min(42, cardWidth * 0.10)));
+        const detailScale = Math.max(0, Math.min(1, (cardHeight - 220) / 205));
+        const titleSize = 14 + detailScale * 5;
+        const metaSize = 10.5 + detailScale * 1.8;
+        const actionSize = 11 + detailScale * 2;
+        const actionHeight = 34 + detailScale * 12;
+        const cardPadding = 11 + detailScale * 9;
+        const cardGap = 6 + detailScale * 6;
         const next = { cardWidth, cardHeight, artSize, slot: cardWidth + gap };
         geometryRef.current = next;
         setGeometry((current) => (
@@ -1130,6 +1205,31 @@ function CloudCarousel({
         rail.style.setProperty('--carousel-card-height', `${cardHeight}px`);
         rail.style.setProperty('--carousel-art-size', `${artSize}px`);
         rail.style.setProperty('--carousel-slot', `${cardWidth + gap}px`);
+        rail.style.setProperty('--carousel-title-size', `${titleSize.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-meta-size', `${metaSize.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-action-size', `${actionSize.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-action-height', `${actionHeight.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-card-padding', `${cardPadding.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-card-gap', `${cardGap.toFixed(2)}px`);
+
+        // The ideal home position is the true viewport midpoint, but never let
+        // the focused card collide with the filter/search row. This constraint
+        // is computed from the actual rendered controls and card height, so it
+        // remains correct at intermediate window sizes instead of relying on a
+        // brittle breakpoint.
+        const controls = document.querySelector<HTMLElement>('.home-cloud-controls');
+        if (controls && window.innerHeight > 620) {
+            const controlsBottom = controls.getBoundingClientRect().bottom;
+            const safeGap = Math.max(16, Math.min(28, window.innerHeight * 0.024));
+            const halfCard = cardHeight / 2;
+            const desiredCenter = window.innerHeight / 2;
+            const minimumCenter = controlsBottom + safeGap + halfCard;
+            const maximumCenter = window.innerHeight - safeGap - halfCard;
+            const constrainedCenter = Math.min(maximumCenter, Math.max(desiredCenter, minimumCenter));
+            rail.style.setProperty('--home-carousel-center-y', `${Math.round(constrainedCenter)}px`);
+        } else {
+            rail.style.removeProperty('--home-carousel-center-y');
+        }
     }, []);
 
     const commitPosition = useCallback((next: number) => {
@@ -1196,13 +1296,6 @@ function CloudCarousel({
         return around + relative;
     }, [games.length]);
 
-    const focusGame = useCallback((gameIndex: number) => {
-        // Aim for the exact visual instance that was clicked, not just the logical index.
-        // This matters in the infinite carousel where the same game can be represented
-        // on either side of the current virtual position.
-        animateTo(visualTargetForGame(gameIndex));
-    }, [animateTo, visualTargetForGame]);
-
     useLayoutEffect(() => {
         if (!operationGame) return;
         const index = games.findIndex((game) => game.id === operationGame.id);
@@ -1240,7 +1333,11 @@ function CloudCarousel({
         if (!rail) return;
         const observer = new ResizeObserver(measure);
         observer.observe(rail);
-        return () => observer.disconnect();
+        window.addEventListener('resize', measure);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', measure);
+        };
     }, [gameOrderKey, commitPosition, measure]);
 
     useEffect(() => () => stopAnimation(), [stopAnimation]);
@@ -1254,9 +1351,12 @@ function CloudCarousel({
         const now = performance.now();
         const card = target.closest<HTMLElement>('[data-game-index]');
         const clickedGameIndex = card ? Number(card.dataset.gameIndex) : null;
-        const clickedTarget = clickedGameIndex !== null && Number.isFinite(clickedGameIndex)
-            ? visualTargetForGame(clickedGameIndex, positionRef.current)
-            : null;
+        const explicitTarget = card ? Number(card.dataset.carouselTarget) : Number.NaN;
+        const clickedTarget = Number.isFinite(explicitTarget)
+            ? explicitTarget
+            : clickedGameIndex !== null && Number.isFinite(clickedGameIndex)
+                ? visualTargetForGame(clickedGameIndex, positionRef.current)
+                : null;
 
         dragRef.current = {
             pointerId: event.pointerId,
@@ -1357,7 +1457,7 @@ function CloudCarousel({
     return (
         <div
             ref={railRef}
-            className={`cloud-carousel ${dragging ? 'dragging' : ''} ${animating ? 'animating' : ''} ${introReveal ? 'intro-reveal' : ''} ${operationMode ? 'operation-mode' : ''} ${returningMode ? 'operation-returning' : ''}`}
+            className={`cloud-carousel ${dragging ? 'dragging' : ''} ${animating ? 'animating' : ''} ${operationMode ? 'operation-mode' : ''} ${returningMode ? 'operation-returning' : ''}`}
             onPointerDown={pointerDown}
             onPointerMove={pointerMove}
             onPointerUp={pointerEnd}
@@ -1385,97 +1485,121 @@ function CloudCarousel({
                 animateTo(Math.round(positionRef.current) + direction);
             }}
         >
-            {games.map((game, gameIndex) => {
-                let relative = gameIndex - position;
-                if (count > 0) relative -= Math.round(relative / count) * count;
-                const distance = Math.abs(relative);
-                const centerWeight = Math.max(0, 1 - Math.min(distance, 1));
-                const sideWeight = Math.max(0, 1 - Math.abs(distance - 1));
-                const opacity = Math.max(0.08, Math.min(1, 0.08 + centerWeight * 0.92 + sideWeight * 0.70));
-                const scale = 0.82 + centerWeight * 0.28 + sideWeight * 0.10;
-                const brightness = 0.58 + centerWeight * 0.42 + sideWeight * 0.24;
-                const saturation = 0.62 + centerWeight * 0.38 + sideWeight * 0.22;
-                const x = relative * geometry.slot;
-                const focused = distance < 0.5;
-                const actionLabel = actionFor(game);
-                const current = game.rememberedBytes ?? 0;
-                const currentFiles = game.rememberedFiles ?? 0;
-                const remaining = game.rememberedFiles === null
-                    ? game.maxFiles
-                    : Math.max(0, game.maxFiles - game.rememberedFiles);
+            {games.flatMap((game, gameIndex) => {
+                const nearestTarget = visualTargetForGame(gameIndex, position);
+                const occurrenceOffsets = count > 0 && count <= 2 && !operationMode && !returningMode
+                    ? [-count, 0, count]
+                    : [0];
 
-                return (
-                    <article
-                        className={`cloud-card ${focused ? 'focused' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
-                        key={game.id}
-                        data-game-index={gameIndex}
-                        style={{
-                            '--card-x': `${x}px`,
-                            '--card-opacity': (operationMode ? (operationGame?.id === game.id ? 1 : 0) : opacity).toFixed(3),
-                            '--card-scale': (operationMode && operationGame?.id === game.id ? 1.10 : scale).toFixed(4),
-                            '--card-saturation': (operationMode && operationGame?.id === game.id ? 1 : saturation).toFixed(3),
-                            '--card-brightness': (operationMode && operationGame?.id === game.id ? 1 : brightness).toFixed(3),
-                            '--intro-delay': `${relative < -0.5 && relative > -1.5 ? 0 : relative > 0.5 && relative < 1.5 ? 120 : distance < 0.5 ? 260 : 360}ms`,
-                            zIndex: Math.max(1, 100 - Math.round(distance * 20))
-                        } as CSSProperties}
-                        onClick={() => {
-                            if (suppressClickRef.current || dragging) return;
-                            if (!focused) focusGame(gameIndex);
-                        }}
-                    >
-                        <span
-                            className={`cloud-card-status status-dot ${
-                                operationMode && operationGame?.id === game.id
-                                    ? `cloud-loading-status ${operationPhase === 'saving' || operationPhase === 'closing' || operationPhase === 'saved' ? 'syncing-out' : 'syncing-in'}`
-                                    : statusTone(game)
-                            }`}
-                            title={game.running ? 'Running' : game.installed ? 'Installed' : 'Not installed'}
-                        />
-                        <GameArtwork game={game} />
-                        <div className="cloud-card-content-stack">
-                            <div className="cloud-card-normal-content">
-                                <div className="cloud-card-title compact-title">
-                                    <strong>{game.name}</strong>
-                                </div>
-                                <div className="cloud-card-usage">
-                                    <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
-                                    <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
-                                </div>
-                                <button
-                                    disabled={actionLabel === 'Unavailable' || game.installing}
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (!focused) {
-                                            focusGame(gameIndex);
-                                            return;
-                                        }
-                                        onAction(game);
-                                    }}
-                                >
-                                    {focused ? actionLabel : 'Select'}
-                                </button>
-                            </div>
+                return occurrenceOffsets.map((occurrenceOffset) => {
+                    const carouselTarget = nearestTarget + occurrenceOffset;
+                    const relative = carouselTarget - position;
+                    const distance = Math.abs(relative);
+                    const centerWeight = Math.max(0, 1 - Math.min(distance, 1));
+                    const sideWeight = Math.max(0, 1 - Math.abs(distance - 1));
+                    const opacity = Math.max(0.08, Math.min(1, 0.08 + centerWeight * 0.92 + sideWeight * 0.70));
+                    // The focused card stays at its measured size. Side cards
+                    // shrink instead of making the center card overflow vertically.
+                    const scale = 0.80 + centerWeight * 0.20 + sideWeight * 0.08;
+                    const brightness = 0.58 + centerWeight * 0.42 + sideWeight * 0.24;
+                    const saturation = 0.62 + centerWeight * 0.38 + sideWeight * 0.22;
+                    const x = relative * geometry.slot;
+                    const focused = distance < 0.5;
+                    const actionLabel = actionFor(game);
+                    const current = game.rememberedBytes ?? 0;
+                    const currentFiles = game.rememberedFiles ?? 0;
 
-                            <div className="cloud-card-loading-content" aria-live="polite">
-                                <div className="cloud-card-title compact-title loading-slot-title">
-                                    <strong>{game.name}</strong>
+                    return (
+                        <article
+                            className={`cloud-card ${focused ? 'focused' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
+                            key={`${game.id}:${occurrenceOffset}`}
+                            data-game-index={gameIndex}
+                            data-carousel-target={carouselTarget}
+                            style={{
+                                '--card-x': `${x}px`,
+                                '--card-opacity': (operationMode ? (operationGame?.id === game.id ? 1 : 0) : opacity).toFixed(3),
+                                '--card-scale': (operationMode && operationGame?.id === game.id ? 1 : scale).toFixed(4),
+                                '--card-saturation': (operationMode && operationGame?.id === game.id ? 1 : saturation).toFixed(3),
+                                '--card-brightness': (operationMode && operationGame?.id === game.id ? 1 : brightness).toFixed(3),
+                                '--intro-delay': `${relative < -0.5 && relative > -1.5 ? 0 : relative > 0.5 && relative < 1.5 ? 120 : distance < 0.5 ? 260 : 360}ms`,
+                                zIndex: Math.max(1, 100 - Math.round(distance * 20))
+                            } as CSSProperties}
+                            onClick={() => {
+                                if (suppressClickRef.current || dragging) return;
+                                if (!focused) animateTo(carouselTarget);
+                            }}
+                        >
+                            <button
+                                type="button"
+                                className={`cloud-card-favorite ${isFavorite(game.id) ? 'active' : ''}`}
+                                aria-label={isFavorite(game.id) ? `Remove ${game.name} from favorites` : `Add ${game.name} to favorites`}
+                                title={isFavorite(game.id) ? 'Remove from favorites' : 'Add to favorites'}
+                                data-no-carousel-drag="true"
+                                disabled={operationMode}
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    onToggleFavorite(game.id);
+                                }}
+                            >
+                                <FavoriteIcon active={isFavorite(game.id)} />
+                            </button>
+                            <span
+                                className={`cloud-card-status status-dot ${
+                                    operationMode && operationGame?.id === game.id
+                                        ? `cloud-loading-status ${operationPhase === 'saving' || operationPhase === 'closing' || operationPhase === 'saved' ? 'syncing-out' : 'syncing-in'}`
+                                        : statusTone(game)
+                                }`}
+                                title={game.running ? 'Running' : game.installed ? 'Installed' : 'Not installed'}
+                            />
+                            <GameArtwork game={game} />
+                            <div className="cloud-card-content-stack">
+                                <div className="cloud-card-normal-content">
+                                    <div className="cloud-card-details">
+                                        <div className="cloud-card-title compact-title">
+                                            <strong>{game.name}</strong>
+                                        </div>
+                                        <div className="cloud-card-usage">
+                                            <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
+                                            <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
+                                        </div>
+                                    </div>
+                                    <button
+                                        disabled={actionLabel === 'Unavailable' || game.installing}
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (!focused) {
+                                                animateTo(carouselTarget);
+                                                return;
+                                            }
+                                            onAction(game);
+                                        }}
+                                    >
+                                        {focused ? actionLabel : 'Select'}
+                                    </button>
                                 </div>
-                                <div className="cloud-card-usage loading-slot-usage">
-                                    <span>Cloud access.</span>
-                                    {operationMode && operationGame?.id === game.id && (
-                                        <span key={operationCurrentLog} className="cloud-loading-logtext" title={operationCurrentLog}>
-                                            {operationCurrentLog}
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="cloud-loading-action">
-                                    <div className="cloud-loading-orbit" aria-hidden="true"><span /></div>
+
+                                <div className="cloud-card-loading-content" aria-live="polite">
+                                    <div className="cloud-card-title compact-title loading-slot-title">
+                                        <strong>{game.name}</strong>
+                                    </div>
+                                    <div className="cloud-card-usage loading-slot-usage">
+                                        <span>Cloud access.</span>
+                                        {operationMode && operationGame?.id === game.id && (
+                                            <span key={operationCurrentLog} className="cloud-loading-logtext" title={operationCurrentLog}>
+                                                {operationCurrentLog}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="cloud-loading-action">
+                                        <div className="cloud-loading-orbit" aria-hidden="true"><span /></div>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    </article>
-                );
+                        </article>
+                    );
+                });
             })}
+
         </div>
     );
 }
@@ -1485,7 +1609,7 @@ export default function App() {
     const [modal, setModal] = useState<ModalState>(null);
     const [loading, setLoading] = useState(true);
     const [introReady, setIntroReady] = useState(false);
-    const [introStage, setIntroStage] = useState<'show' | 'exit' | 'reveal' | 'done'>('show');
+    const [introStage, setIntroStage] = useState<'show' | 'exit' | 'done'>('show');
     const [fullscreen, setFullscreen] = useState(false);
     const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
     const [phase, setPhase] = useState<Phase>('closed');
@@ -1498,6 +1622,18 @@ export default function App() {
     const [transferProgress, setTransferProgress] = useState<CloudTransferProgress | null>(null);
     const [sessionDirty, setSessionDirty] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
+    const [homeFilter, setHomeFilter] = useState<HomeCloudFilter>('all');
+    const [homeQuery, setHomeQuery] = useState('');
+    const [homeSearchExpanded, setHomeSearchExpanded] = useState(false);
+    const [favoriteGameIds, setFavoriteGameIds] = useState<Set<GameId>>(() => {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(FAVORITE_CLOUDS_STORAGE_KEY) || '[]');
+            return new Set(Array.isArray(stored) ? stored.filter((value): value is GameId => typeof value === 'string') : []);
+        } catch {
+            return new Set<GameId>();
+        }
+    });
+    const homeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const lastActivityAt = useRef(Date.now());
     const automaticSessionActionRunning = useRef(false);
     const windowCloseHandling = useRef(false);
@@ -1516,10 +1652,30 @@ export default function App() {
             if (activeGameIdRef.current) return;
             event.preventDefault();
             event.stopPropagation();
+
+            // From the home screen, Ctrl/Cmd+F is the global cached-file search.
+            // The compact Cloud search is intentionally mouse/touch only via its loupe.
             setSearchOpen(true);
         };
         window.addEventListener('keydown', onFindShortcut, true);
         return () => window.removeEventListener('keydown', onFindShortcut, true);
+    }, []);
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(FAVORITE_CLOUDS_STORAGE_KEY, JSON.stringify([...favoriteGameIds]));
+        } catch {
+            // Favorites are a UI preference; storage failures must not block Cloud access.
+        }
+    }, [favoriteGameIds]);
+
+    const toggleFavorite = useCallback((id: GameId) => {
+        setFavoriteGameIds((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
     }, []);
 
     const refresh = useCallback(async (): Promise<AppStatus> => {
@@ -1539,7 +1695,7 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        const timer = window.setTimeout(() => setIntroReady(true), 1550);
+        const timer = window.setTimeout(() => setIntroReady(true), 950);
         void window.vaporApi.isFullscreen().then(setFullscreen).catch(() => undefined);
         const removeFullscreenListener = window.vaporApi.onFullscreenChanged(setFullscreen);
         return () => {
@@ -1555,14 +1711,8 @@ export default function App() {
 
     useEffect(() => {
         if (introStage !== 'exit') return;
-        const finishSplash = window.setTimeout(() => setIntroStage('reveal'), 560);
-        return () => window.clearTimeout(finishSplash);
-    }, [introStage]);
-
-    useEffect(() => {
-        if (introStage !== 'reveal') return;
-        const finishReveal = window.setTimeout(() => setIntroStage('done'), 1320);
-        return () => window.clearTimeout(finishReveal);
+        const finishIntro = window.setTimeout(() => setIntroStage('done'), 520);
+        return () => window.clearTimeout(finishIntro);
     }, [introStage]);
 
     useEffect(() => {
@@ -1575,6 +1725,40 @@ export default function App() {
         () => status?.games.find((game) => game.id === activeGameId) ?? null,
         [status, activeGameId]
     );
+
+    const filteredHomeGames = useMemo(() => {
+        const query = homeQuery.trim().toLocaleLowerCase();
+        const detected = [...(status?.games ?? [])]
+            .sort((a, b) => a.installSize - b.installSize || a.name.localeCompare(b.name));
+
+        return detected.filter((game) => {
+            if (homeFilter === 'favorites' && !favoriteGameIds.has(game.id)) return false;
+            if (homeFilter === 'installed' && !game.installed) return false;
+            if (homeFilter === 'not-installed' && game.installed) return false;
+            if (!query) return true;
+
+            const haystack = [game.name, game.volumeName, game.appId, game.cloudPattern]
+                .join(' ')
+                .toLocaleLowerCase();
+            return haystack.includes(query);
+        });
+    }, [status, homeFilter, homeQuery, favoriteGameIds]);
+
+    const homeCarouselGames = useMemo(() => {
+        if (!activeGame || phase === 'open' || filteredHomeGames.some((game) => game.id === activeGame.id)) {
+            return filteredHomeGames;
+        }
+        // Keep the active operation visible even if a live status refresh changes its filter bucket.
+        return [...filteredHomeGames, activeGame];
+    }, [filteredHomeGames, activeGame, phase]);
+
+    const homeEmptyMessage = useMemo(() => {
+        if (homeQuery.trim()) return `No Steam Clouds match “${homeQuery.trim()}”.`;
+        if (homeFilter === 'favorites') return 'No favorite Steam Clouds yet.';
+        if (homeFilter === 'installed') return 'No installed Steam Clouds detected.';
+        if (homeFilter === 'not-installed') return 'Every detected Steam Cloud is installed.';
+        return 'No Steam Clouds detected.';
+    }, [homeFilter, homeQuery]);
 
     async function waitForSteamRunning(expected: boolean): Promise<AppStatus> {
         const started = Date.now();
@@ -2181,30 +2365,36 @@ export default function App() {
         });
     }, []);
 
-    if (loading || !status) {
-        return (
-            <main className="startup-splash" aria-label="VaporStow is starting">
-                <div className="startup-glow" />
-                <img className="startup-logo" src={startupLogo} alt="" />
-                <div className="startup-wordmark">VaporStow</div>
-                <div className="startup-loader"><span /></div>
-            </main>
-        );
-    }
-
     const stageKey = activeGameId && phase === 'open' ? activeGameId : 'volumes';
-    const showIntroOverlay = introStage === 'show' || introStage === 'exit';
-    const introShellClass = introStage === 'show' || introStage === 'exit'
+    const showIntroOverlay = introStage !== 'done';
+    const introShellClass = introStage === 'show'
         ? 'intro-pending'
-        : introStage === 'reveal'
+        : introStage === 'exit'
             ? 'intro-revealing'
             : 'intro-ready';
+    const appReady = !loading && Boolean(status);
 
     return (
         <>
-            <main className={`shell ${activeGameId ? 'focused' : ''} ${status.platform === 'linux' ? 'linux-shell' : ''} ${introShellClass}`}>
+            {showIntroOverlay && (
+                <div className={`startup-splash startup-overlay ${introStage === 'exit' ? 'exiting' : ''}`} aria-label="Application is starting">
+                    <div className="startup-glow" />
+                    <img className="startup-logo" src={startupLogo} alt="" />
+                    <div className="startup-loader"><span /></div>
+                </div>
+            )}
+
+            {appReady && status && (
+            <main className={`shell ${activeGameId ? 'focused' : ''} ${activeGameId && phase === 'open' ? 'cloud-open-shell' : ''} ${status.platform === 'linux' ? 'linux-shell' : ''} ${introShellClass}`}>
                 {status.platform === 'linux' && (
                     <div className="linux-window-controls" data-no-carousel-drag="true">
+                        <button
+                            className={`steam window-steam ${!status.steamInstalled ? 'missing' : status.steamRunning ? 'ok' : 'idle'}`}
+                            title={!status.steamInstalled ? 'Steam is not installed' : status.steamRunning ? 'Steam is running' : 'Steam is installed but not running'}
+                            onClick={() => !status.steamInstalled && void window.vaporApi.openSteamDownload()}
+                        >
+                            Steam <i />
+                        </button>
                         <button
                             className="info"
                             title="Information"
@@ -2227,14 +2417,15 @@ export default function App() {
                     </div>
                 )}
                 <header>
-                    <div className="brand">VaporStow</div>
-                    <button
-                        className={`steam ${!status.steamInstalled ? 'missing' : status.steamRunning ? 'ok' : 'idle'}`}
-                        title={!status.steamInstalled ? 'Steam is not installed' : status.steamRunning ? 'Steam is running' : 'Steam is installed but not running'}
-                        onClick={() => !status.steamInstalled && void window.vaporApi.openSteamDownload()}
-                    >
-                        Steam <i />
-                    </button>
+                    {status.platform !== 'linux' && (
+                        <button
+                            className={`steam ${!status.steamInstalled ? 'missing' : status.steamRunning ? 'ok' : 'idle'}`}
+                            title={!status.steamInstalled ? 'Steam is not installed' : status.steamRunning ? 'Steam is running' : 'Steam is installed but not running'}
+                            onClick={() => !status.steamInstalled && void window.vaporApi.openSteamDownload()}
+                        >
+                            Steam <i />
+                        </button>
+                    )}
                 </header>
 
                 <div className="stage" key={stageKey}>
@@ -2246,36 +2437,99 @@ export default function App() {
 
                     {(!activeGameId || (activeGame && phase !== 'open')) ? (
                         <section className={`home-clouds ${activeGame && phase !== 'open' ? 'cloud-operation-active' : ''}`}>
-                            <CloudCarousel
-                                games={[...status.games].sort((a, b) => a.installSize - b.installSize)}
-                                actionFor={(game) => !game.platformSupported
-                                    ? 'Store'
-                                    : game.installing
-                                        ? 'Installing…'
-                                        : !game.installed
-                                            ? 'Install'
-                                            : !game.cloudRoot
-                                                ? 'Unavailable'
-                                                : 'Open'}
-                                onAction={(game) => {
-                                    if (!game.platformSupported) void window.vaporApi.openStore(game.id);
-                                    else if (!game.installed) setModal({ kind: 'install', game });
-                                    else setModal({ kind: 'open', game });
-                                }}
-                                introReveal={introStage === 'reveal'}
-                                operationGame={activeGame && phase !== 'open' ? activeGame : null}
-                                operationPhase={phase}
-                                operationDetail={operationDetail}
-                                operationProgress={transferProgress}
-                            />
-                            {!activeGameId && (introStage === 'reveal' || introStage === 'done') && (
-                                <button className="home-search-trigger" onClick={() => setSearchOpen(true)}>
-                                    <SearchIcon />
-                                    <span>Search Cloud…</span>
-                                </button>
-                            )}
-                            {activeGameId && phase !== 'open' && (
-                                <div className="home-search-trigger home-search-placeholder" aria-hidden="true" />
+                            <div className={`home-cloud-controls ${activeGame && phase !== 'open' ? 'operation-hidden' : ''}`}>
+                                <div className="home-cloud-controls-row">
+                                    <div className="home-cloud-filters" role="group" aria-label="Filter Steam Clouds">
+                                        {([
+                                            ['all', 'All'],
+                                            ['favorites', 'Favorites'],
+                                            ['installed', 'Installed'],
+                                            ['not-installed', 'Not installed']
+                                        ] as Array<[HomeCloudFilter, string]>).map(([value, label]) => (
+                                            <button
+                                                key={value}
+                                                type="button"
+                                                className={homeFilter === value ? 'active' : ''}
+                                                aria-pressed={homeFilter === value}
+                                                disabled={Boolean(activeGame && phase !== 'open')}
+                                                onClick={() => setHomeFilter(value)}
+                                            >
+                                                <span>{label}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    <div className={`home-cloud-search ${homeSearchExpanded ? 'expanded' : ''}`}>
+                                        <button
+                                            type="button"
+                                            className="home-cloud-search-toggle"
+                                            title="Search Clouds"
+                                            aria-label="Search Clouds"
+                                            aria-expanded={homeSearchExpanded}
+                                            disabled={Boolean(activeGame && phase !== 'open')}
+                                            onClick={() => {
+                                                setHomeSearchExpanded(true);
+                                                window.requestAnimationFrame(() => {
+                                                    homeSearchInputRef.current?.focus();
+                                                    homeSearchInputRef.current?.select();
+                                                });
+                                            }}
+                                        >
+                                            <SearchIcon size={14} />
+                                        </button>
+                                        <input
+                                            ref={homeSearchInputRef}
+                                            value={homeQuery}
+                                            disabled={Boolean(activeGame && phase !== 'open')}
+                                            tabIndex={homeSearchExpanded ? 0 : -1}
+                                            placeholder="Search cloud..."
+                                            aria-label="Search detected Steam Clouds"
+                                            onChange={(event) => setHomeQuery(event.target.value)}
+                                            onBlur={() => {
+                                                if (!homeQuery.trim()) setHomeSearchExpanded(false);
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Escape') {
+                                                    setHomeQuery('');
+                                                    setHomeSearchExpanded(false);
+                                                    event.currentTarget.blur();
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {homeCarouselGames.length > 0 ? (
+                                <CloudCarousel
+                                    games={homeCarouselGames}
+                                    actionFor={(game) => !game.platformSupported
+                                        ? 'Store'
+                                        : game.installing
+                                            ? 'Installing…'
+                                            : !game.installed
+                                                ? 'Install'
+                                                : !game.cloudRoot
+                                                    ? 'Unavailable'
+                                                    : 'Open'}
+                                    onAction={(game) => {
+                                        if (!game.platformSupported) void window.vaporApi.openStore(game.id);
+                                        else if (!game.installed) setModal({ kind: 'install', game });
+                                        else setModal({ kind: 'open', game });
+                                    }}
+                                    isFavorite={(id) => favoriteGameIds.has(id)}
+                                    onToggleFavorite={toggleFavorite}
+                                    operationGame={activeGame && phase !== 'open' ? activeGame : null}
+                                    operationPhase={phase}
+                                    operationDetail={operationDetail}
+                                    operationProgress={transferProgress}
+                                />
+                            ) : (
+                                <div className="home-cloud-empty" role="status">
+                                    {homeFilter === 'favorites' ? <FavoriteIcon active size={22} /> : <SearchIcon size={22} />}
+                                    <strong>{homeEmptyMessage}</strong>
+                                    <span>Change the filter or search to show another Cloud.</span>
+                                </div>
                             )}
                         </section>
                     ) : activeGame ? (
@@ -2300,17 +2554,9 @@ export default function App() {
                     )}
                 </div>
             </main>
-
-            {showIntroOverlay && (
-                <div className={`startup-splash startup-overlay ${introStage === 'exit' ? 'exiting' : ''}`} aria-label="VaporStow is starting">
-                    <div className="startup-glow" />
-                    <img className="startup-logo" src={startupLogo} alt="" />
-                    <div className="startup-wordmark">VaporStow</div>
-                    <div className="startup-loader"><span /></div>
-                </div>
             )}
 
-            {searchOpen && !activeGameId && (
+            {searchOpen && !activeGameId && status && (
                 <SearchModal
                     close={() => setSearchOpen(false)}
                     openEntry={(entry) => {

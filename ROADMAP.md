@@ -1,6 +1,6 @@
 # Roadmap
 
-- [ ] Rework the home screen around dynamically detected Steam Clouds: add `All`, `Favorites`, `Installed`, and `Not installed` filters, a `Search cloud...` field, and a favorite button on each Cloud card while keeping the current minimal design.
+- [x] Rework the home screen around dynamically detected Steam Clouds: add `All`, `Favorites`, `Installed`, and `Not installed` filters, a magnifier button that expands into `Search cloud...`, centered home controls, a favorite button on each Cloud card, and a circular carousel that repeats a single visible Cloud as `A · A · A` or mirrors the opposite card on both sides when two Clouds are visible.
 
 - [ ] Replace manually added games with generic Steam Cloud detection: VaporStow should automatically inspect AppIDs and Steam Cloud configuration to retrieve quota, maximum file count, local Cloud path, accepted pattern (`*.sav`, `*.map`, `*`, etc.), recursive behavior, and determine which Clouds are actually usable without hardcoding each game.
 
