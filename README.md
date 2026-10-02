@@ -37,7 +37,7 @@
 - Dynamic Cloud home with centered `All`, `Favorites`, `Installed`, and `Not installed` filters
 - Expandable magnifier search for detected Clouds by name, volume, AppID, or Cloud pattern
 - Persistent favorite Clouds across app launches
-- Circular home carousel, including `A · A · A` for one visible Cloud and mirrored side cards for two visible Clouds
+- Circular home carousel
 - Manage files and folders through a local desktop interface
 - Automatic handling of large files within supported file-size limits
 - Incremental synchronization to avoid unnecessary data transfers
