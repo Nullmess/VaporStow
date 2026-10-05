@@ -11,7 +11,7 @@ export type DirectoryListing = {
 };
 
 export type CloudSearchEntry = {
-    gameId: 'neko-dice' | 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
+    gameId: string;
     gameName: string;
     volumeName: string;
     path: string;
@@ -23,16 +23,24 @@ export type CloudSearchEntry = {
 };
 
 export type GameStatus = {
-    id: 'neko-dice' | 'asteroid' | 'hunt-for-gods' | 'world-of-shooting';
+    id: string;
     appId: string;
     name: string;
     volumeName: string;
     quotaBytes: number;
     maxFiles: number;
     cloudPattern: string;
+    storageMode: 'direct' | 'carrier';
+    cloudRuleCount: number;
+    discoverySource: 'local' | 'catalog';
+    isFreeApp: boolean;
+    storePriceCents: number | null;
+    storePriceLabel: string | null;
+    artworkUrls: string[];
     platformSupported: boolean;
     nativeCloudSupport: boolean;
     protonExperimental: boolean;
+    inLibrary: boolean;
     installed: boolean;
     installing: boolean;
     installDir: string | null;
@@ -50,6 +58,18 @@ export type GameStatus = {
     disk: { free: number; total: number } | null;
 };
 
+export type ExternalCatalogDiscoveryStats = {
+    indexedApps: number;
+    candidatesSeen: number;
+    candidatesChecked: number;
+    queuedCandidates: number;
+    unresolvedCandidates: number;
+    cloudCandidates: number;
+    storeCloudTotal: number;
+    storeGenericTotal: number;
+    lastSearchAt: number;
+};
+
 export type AppStatus = {
     appVersion: string;
     platform: 'win32' | 'darwin' | 'linux' | string;
@@ -58,6 +78,7 @@ export type AppStatus = {
     steamRoot: string | null;
     steamCloudLog: string | null;
     steamId64: string | null;
+    catalogDiscovery: ExternalCatalogDiscoveryStats;
     games: GameStatus[];
 };
 
@@ -150,8 +171,17 @@ export type RestoreSplitResult = {
     cachedParts: number;
 };
 
+export type ExternalCatalogSearchCriteria = {
+    minQuotaBytes?: number;
+    minFiles?: number;
+    maxAppSizeBytes?: number | null;
+    targetResults?: number;
+};
+
 export type VaporApi = {
     getStatus: () => Promise<AppStatus>;
+    startCatalogBackground: () => Promise<boolean>;
+    searchExternalCatalog: (criteria?: ExternalCatalogSearchCriteria) => Promise<AppStatus>;
     openSteamDownload: () => Promise<void>;
     openGithubProfile: (username: string) => Promise<void>;
     runSteam: () => Promise<{ launched: boolean; alreadyRunning: boolean }>;
@@ -175,6 +205,7 @@ export type VaporApi = {
     waitForCloudSync: (id: GameStatus['id'], marker: number) => Promise<CloudSyncResult>;
     prepareSync: (id: GameStatus['id']) => Promise<PrepareSyncResult>;
     getCloudContentSummary: (id: GameStatus['id']) => Promise<CloudContentSummary>;
+    getAuditUsage: (id: GameStatus['id']) => Promise<{ bytes: number; files: number }>;
     pruneEmptyDirectories: (id: GameStatus['id']) => Promise<{ removed: number }>;
     restoreSplitFiles: (id: GameStatus['id']) => Promise<RestoreSplitResult>;
     getRestoreProgress: (id: GameStatus['id']) => Promise<SplitRestoreProgress | null>;

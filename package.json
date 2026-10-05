@@ -2,7 +2,7 @@
   "name": "vaporstow",
   "version": "1.0.1",
   "private": true,
-  "description": "Cross-platform desktop client for managing files in supported Steam Cloud locations.",
+  "description": "Cross-platform desktop client for managing compatible Steam Auto-Cloud locations.",
   "author": "Nullmess & Ybucaille",
   "license": "MIT",
   "main": "dist-electron/main.js",
@@ -10,26 +10,13 @@
     "node": "22.x",
     "npm": ">=10"
   },
-  "allowScripts": {
-    "electron": true,
-    "esbuild": true,
-    "electron-winstaller": true
-  },
   "scripts": {
-    "preinstall": "node -e \"if (process.versions.node.split('.')[0] !== '22') { console.error('VaporStow requires Node.js 22.x. Run: fnm use 22'); process.exit(1) }\"",
-    "dev": "npm run build:electron && concurrently -k \"vite renderer --config renderer/vite.config.ts --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node electron/dev.mjs\"",
-    "build": "rimraf dist dist-electron && npm run build:renderer && npm run build:electron",
-    "build:renderer": "vite build renderer --config renderer/vite.config.ts",
-    "build:electron": "tsc -p electron/tsconfig.json",
-    "typecheck": "tsc -p renderer/tsconfig.json --noEmit && tsc -p electron/tsconfig.json --noEmit",
-    "clean": "node -e \"const fs=require('node:fs');for(const p of ['dist','dist-electron','release','coverage','.cache','.vite','cloud-index.db','cloud-index.db-journal'])fs.rmSync(p,{recursive:true,force:true})\"",
-    "package:win": "electron-builder --publish never --win --x64 -c.directories.output=release/VaporStow-windows-x64",
-    "package:mac": "electron-builder --publish never --mac --x64 -c.directories.output=release/VaporStow-macos-x64",
-    "package:lin": "electron-builder --publish never --linux --x64 -c.directories.output=release/VaporStow-linux-x64",
-    "build-win": "npm run build && rimraf release/VaporStow-windows-x64 && npm run package:win",
-    "build-mac": "node -e \"const cp=require('node:child_process');const run=(cmd,args,capture=false)=>{const r=cp.spawnSync(cmd,args,{encoding:'utf8',stdio:capture?['ignore','pipe','inherit']:'inherit'});if(r.error){console.error(cmd==='gh'?'GitHub CLI (gh) is required to build macOS from a non-macOS host.':r.error.message);process.exit(1)}if(r.status!==0)process.exit(r.status??1);return (r.stdout||'').trim()};if(process.platform==='darwin'){run('npm',['run','build']);run('npx',['rimraf','release/VaporStow-macos-x64']);run('npm',['run','package:mac']);}else{const dirty=run('git',['status','--porcelain'],true);if(dirty){console.error('Commit and push your changes before build-mac: the macOS build runs on GitHub Actions.');process.exit(1)}const branch=run('git',['branch','--show-current'],true);if(!branch){console.error('build-mac requires a checked-out branch.');process.exit(1)}const ahead=run('git',['rev-list','--count','@{u}..HEAD'],true);if(ahead!=='0'){console.error('Push your branch before build-mac: the macOS runner can only build commits available on GitHub.');process.exit(1)}const repo=run('gh',['repo','view','--json','nameWithOwner','--jq','.nameWithOwner'],true);const id=run('gh',['api','-H','X-GitHub-Api-Version: 2026-03-10','-X','POST','repos/'+repo+'/actions/workflows/build-mac.yml/dispatches','-f','ref='+branch,'--jq','.workflow_run_id'],true);if(!id){console.error('GitHub did not return a workflow run id. Update GitHub CLI and try again.');process.exit(1)}console.log('macOS build: https://github.com/'+repo+'/actions/runs/'+id);run('gh',['run','watch',id,'--exit-status']);run('npx',['rimraf','release/VaporStow-macos-x64','release/VaporStow-macos-x64.zip']);run('gh',['run','download',id,'-n','VaporStow-macos-x64.zip','-D','release']);console.log('Downloaded to release/VaporStow-macos-x64.zip');}\"",
-    "build-lin": "npm run build && rimraf release/VaporStow-linux-x64 && npm run package:lin",
-    "app": "npm run build && electron ."
+    "dev": "tsc -p electron/tsconfig.json && concurrently -k \"vite renderer --config renderer/vite.config.ts --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node electron/dev.mjs\"",
+    "build-win": "rimraf dist dist-electron release/VaporStow-windows-x64 && vite build renderer --config renderer/vite.config.ts && tsc -p electron/tsconfig.json && electron-builder --publish never --win --x64 -c.directories.output=release/VaporStow-windows-x64",
+    "build-lin": "rimraf dist dist-electron release/VaporStow-linux-x64 && vite build renderer --config renderer/vite.config.ts && tsc -p electron/tsconfig.json && electron-builder --publish never --linux --x64 -c.directories.output=release/VaporStow-linux-x64",
+    "build-mac": "node -e \"const cp=require('node:child_process');const run=(cmd,args,capture=false)=>{const r=cp.spawnSync(cmd,args,{encoding:'utf8',stdio:capture?['ignore','pipe','inherit']:'inherit'});if(r.error){console.error(cmd==='gh'?'GitHub CLI (gh) is required to build macOS from a non-macOS host.':r.error.message);process.exit(1)}if(r.status!==0)process.exit(r.status??1);return (r.stdout||'').trim()};if(process.platform==='darwin'){run('npx',['rimraf','dist','dist-electron','release/VaporStow-macos-x64']);run('npx',['vite','build','renderer','--config','renderer/vite.config.ts']);run('npx',['tsc','-p','electron/tsconfig.json']);run('npx',['electron-builder','--publish','never','--mac','--x64','-c.directories.output=release/VaporStow-macos-x64']);}else{const dirty=run('git',['status','--porcelain'],true);if(dirty){console.error('Commit and push your changes before build-mac: the macOS build runs on GitHub Actions.');process.exit(1)}const branch=run('git',['branch','--show-current'],true);if(!branch){console.error('build-mac requires a checked-out branch.');process.exit(1)}const ahead=run('git',['rev-list','--count','@{u}..HEAD'],true);if(ahead!=='0'){console.error('Push your branch before build-mac: the macOS runner can only build commits available on GitHub.');process.exit(1)}const repo=run('gh',['repo','view','--json','nameWithOwner','--jq','.nameWithOwner'],true);const id=run('gh',['api','-H','X-GitHub-Api-Version: 2026-03-10','-X','POST','repos/'+repo+'/actions/workflows/build-mac.yml/dispatches','-f','ref='+branch,'--jq','.workflow_run_id'],true);if(!id){console.error('GitHub did not return a workflow run id. Update GitHub CLI and try again.');process.exit(1)}console.log('macOS build: https://github.com/'+repo+'/actions/runs/'+id);run('gh',['run','watch',id,'--exit-status']);run('npx',['rimraf','release/VaporStow-macos-x64']);run('gh',['run','download',id,'-n','VaporStow-macos-x64','-D','release/VaporStow-macos-x64']);console.log('Downloaded to release/VaporStow-macos-x64');}\"",
+    "app": "rimraf dist dist-electron && vite build renderer --config renderer/vite.config.ts && tsc -p electron/tsconfig.json && electron .",
+    "clean": "node -e \"const fs=require('node:fs');for(const p of ['node_modules','dist','dist-electron','release','coverage','.cache','.vite','cloud-index.db','cloud-index.db-journal'])fs.rmSync(p,{recursive:true,force:true})\""
   },
   "dependencies": {
     "react": "19.1.1",
@@ -57,7 +44,8 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json",
-      "assets/build/**/*"
+      "assets/build/**/*",
+      "assets/data/cloud-catalog.json"
     ],
     "directories": {
       "output": "release",
@@ -87,7 +75,7 @@
       "desktop": {
         "entry": {
           "Name": "VaporStow",
-          "Comment": "Steam Cloud file manager for supported games",
+          "Comment": "Steam Auto-Cloud file manager",
           "Categories": "Utility;",
           "Keywords": "steam;cloud;files;games;",
           "StartupWMClass": "VaporStow",
@@ -107,6 +95,5 @@
       "name": "Ybucaille",
       "url": "https://github.com/Ybucaille"
     }
-  ],
-  "desktopName": "VaporStow.desktop"
+  ]
 }

@@ -12,7 +12,6 @@ const SPLIT_MANIFEST_VERSION = 2;
 const SPLIT_STAGING_PREFIX = `${SPLIT_STORAGE_FOLDER}.staging-`;
 const SPLIT_RESTORE_POLL_MS = 400;
 const SPLIT_RESTORE_STABLE_MS = 1500;
-// Tolérer les longues sync tant qu'une activité de download ou rebuild reste visible.
 const SPLIT_RESTORE_STALL_TIMEOUT_MS = 30 * 60 * 1000;
 const SPLIT_RESTORE_MAX_MS = 6 * 60 * 60 * 1000;
 const SPLIT_IO_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -20,7 +19,6 @@ const SPLIT_IO_BUFFER_BYTES = 4 * 1024 * 1024;
 type SplitManifestPart = {
     file: string;
     size: number;
-    // Garder les hashes optionnels pour migrer les manifests v1 sans renommer les parts.
     sha256?: string;
 };
 
@@ -77,7 +75,6 @@ export type SplitRestoreProgress = {
 
 export type SplitRestoreProgressHandler = (progress: SplitRestoreProgress) => void;
 
-// Gestion du format split et de son cache.
 
 function isSplitInternalName(name: string): boolean {
     return name === SPLIT_STORAGE_FOLDER || name.startsWith(SPLIT_STAGING_PREFIX);
@@ -299,7 +296,6 @@ async function writeSourceRange(
             await out.write(buffer, 0, bytesRead, offset);
             offset += bytesRead;
         }
-        // Persister la transaction avant de retirer l'original et lancer la sync AC Exit.
         await out.sync();
     } finally {
         await out.close();
@@ -317,7 +313,6 @@ async function cloneFilePreservingMetadata(source: string, destination: string):
 
     const stat = await fsp.stat(source);
     await fsp.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
-    // Préserver le mtime pour conserver l'identité Cloud d'un fichier inchangé.
     await fsp.utimes(destination, stat.atime, stat.mtime);
 }
 
@@ -385,7 +380,6 @@ async function writeFileInChunksIncremental(
         while (sourceOffset < size) {
             const partSize = Math.min(SYNC_CHUNK_BYTES, size - sourceOffset);
             const previous = cachedEntry?.parts[partIndex];
-            // Réutiliser le filename précédent pour garder la même identité remote.
             const partName = previous && isSafePartFileName(previous.file)
                 ? previous.file
                 : stablePartName(relativePath, partIndex);
@@ -515,7 +509,6 @@ async function cacheCompleteSplitRepresentation(
     }
 }
 
-// Reconstruction transactionnelle des fichiers split.
 
 export async function restoreSplitFiles(
     cloudRoot: string,
@@ -528,7 +521,7 @@ export async function restoreSplitFiles(
     const cachedManifest = cacheRoot ? await readManifestAt(cacheRoot) : null;
 
     const emit = (progress: SplitRestoreProgress) => {
-        try { onProgress?.(progress); } catch { /* Le callback UI ne doit jamais interrompre le restore. */ }
+        try { onProgress?.(progress); } catch { /* L’UI ne doit pas interrompre la restauration. */ }
     };
 
     if (!manifest) {
@@ -742,7 +735,6 @@ export async function restoreSplitFiles(
                                     const cachedPath = safePartPath(cacheRoot, cachedPart.file);
                                     const cachedStat = await fsp.stat(cachedPath);
                                     if (cachedStat.isFile() && cachedStat.size === part.size) {
-                                        // Valider le cache par SHA-256 complet et vérifier chaque part en v2.
                                         let cacheValid = true;
                                         if (part.sha256) {
                                             if (cachedPart.sha256) {
@@ -795,7 +787,6 @@ export async function restoreSplitFiles(
                     }
 
                     currentIdleSeconds = null;
-                    // Exclure l'attente Steam du calcul de vitesse du rebuild.
                     if (Date.now() - lastActivityAt > 1500) speedSamples.length = 0;
 
                     for (const { index: partIndex, info, source } of readyParts) {
@@ -909,7 +900,6 @@ export async function restoreSplitFiles(
 
     const cachedParts = manifest.files.reduce((sum, entry) => sum + entry.parts.length, 0);
     if (cacheRoot) {
-        // Fusionner les parts téléchargées avec le cache exact déjà disponible.
         await cacheCompleteSplitRepresentation(storageRoot, cacheRoot, manifest, cachedManifest);
     } else {
         await fsp.rm(storageRoot, { recursive: true, force: true });
@@ -940,7 +930,6 @@ export async function restoreSplitFiles(
     return { restoredFiles, detected: true, cachedParts };
 }
 
-// Préparation transactionnelle avant synchronisation.
 
 export async function prepareSplitFilesForSync(
     cloudRoot: string,
@@ -948,7 +937,6 @@ export async function prepareSplitFilesForSync(
     maxFiles: number,
     cacheRoot?: string
 ): Promise<SplitPreparationResult> {
-    // Restaurer d'abord toute transaction de split active de façon idempotente.
     await restoreSplitFiles(cloudRoot, cacheRoot);
     await removeSplitStaging(cloudRoot);
 
@@ -989,7 +977,6 @@ export async function prepareSplitFilesForSync(
     let rewrittenParts = 0;
 
     try {
-        // Trier les paths pour garder un manifest stable si le contenu ne change pas.
         const stableOversized = [...oversized].sort((a, b) => a.path.localeCompare(b.path));
         for (const file of stableOversized) {
             const source = safeAuditPath(cloudRoot, file.path);
@@ -1009,7 +996,6 @@ export async function prepareSplitFilesForSync(
         const equivalent = manifestsEquivalent(cachedManifest, manifest);
         const manifestTarget = path.join(stagingRoot, SPLIT_MANIFEST_FILE);
         if (equivalent && cacheRoot) {
-            // Préserver aussi le mtime du manifest lorsqu'aucune part ne change.
             await cloneFilePreservingMetadata(manifestPathIn(cacheRoot), manifestTarget);
         } else {
             manifest.createdAt = new Date().toISOString();
@@ -1036,7 +1022,6 @@ export async function prepareSplitFilesForSync(
                 await fsp.rm(safeAuditPath(cloudRoot, file.path), { force: true });
             }
         } catch (error) {
-            // Restaurer les fichiers normaux si la suppression transactionnelle échoue.
             await restoreSplitFiles(cloudRoot, cacheRoot);
             throw error;
         }
@@ -1072,7 +1057,6 @@ type ImportPlan = {
     newFiles: number;
 };
 
-// Opérations génériques sur le Cloud local.
 
 export async function ensureDir(target: string): Promise<void> {
     await fsp.mkdir(target, { recursive: true });
@@ -1318,7 +1302,6 @@ async function assertPlanFits(
     maxBytes: number,
     maxFiles: number
 ): Promise<void> {
-    // Compter tout le volume Auto-Cloud car le jeu peut aussi y créer ses fichiers.
     const current = await treeStats(cloudRoot);
     const projectedBytes = current.bytes + plan.bytesDelta;
     const projectedFiles = current.files + plan.newFiles;
@@ -1387,10 +1370,6 @@ async function copyFile(source: string, destination: string): Promise<void> {
     const parent = path.dirname(destination);
     await ensureDir(parent);
 
-    // Do not overwrite the destination in-place. Git pack files and other
-    // imported assets can legitimately be read-only; retrying an import would
-    // then fail with EACCES when copyFile tries to truncate that existing file.
-    // Copy to a fresh sibling and replace the directory entry atomically instead.
     const temporary = path.join(
         parent,
         `.${path.basename(destination)}.vaporstow-${process.pid}-${crypto.randomUUID()}.tmp`
@@ -1399,8 +1378,6 @@ async function copyFile(source: string, destination: string): Promise<void> {
     try {
         await fsp.copyFile(source, temporary);
 
-        // Keep the source permission bits where the platform supports them.
-        // The replacement itself does not require the old destination to be writable.
         if (process.platform !== 'win32') {
             await fsp.chmod(temporary, stat.mode & 0o777).catch(() => undefined);
         }
@@ -1411,8 +1388,6 @@ async function copyFile(source: string, destination: string): Promise<void> {
             const code = (error as NodeJS.ErrnoException).code;
             if (process.platform !== 'win32' || !['EACCES', 'EPERM', 'EEXIST'].includes(code || '')) throw error;
 
-            // Windows can reject rename-over-existing. Remove the old entry and
-            // retry; chmod helps with files carrying a read-only attribute.
             await fsp.chmod(destination, 0o666).catch(() => undefined);
             await fsp.rm(destination, { force: true });
             await fsp.rename(temporary, destination);

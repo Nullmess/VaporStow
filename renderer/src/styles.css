@@ -186,7 +186,7 @@ header button, header a, header input {
     width: var(--carousel-card-width);
     height: var(--carousel-card-height);
     min-height: var(--carousel-card-height);
-    padding: clamp(24px, 3vw, 36px) clamp(20px, 2.5vw, 30px) clamp(22px, 2.7vw, 30px);
+    padding: clamp(24px, 3vw, 36px) clamp(20px, 2.5vw, 30px) clamp(12px, 1.5vw, 18px);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -227,11 +227,10 @@ header button, header a, header input {
     box-shadow: 0 0 0 3px #111419;
 }
 .cloud-card-art {
-    --art-width-factor: 1;
-    --art-height-factor: 1;
     position: relative;
-    width: calc(var(--carousel-art-size) * var(--art-width-factor));
-    height: calc(var(--carousel-art-size) * var(--art-height-factor));
+    width: var(--carousel-art-size);
+    height: var(--carousel-art-size);
+    aspect-ratio: 1 / 1;
     margin-top: clamp(2px, 1vh, 10px);
     display: grid;
     place-items: center;
@@ -459,7 +458,6 @@ header button, header a, header input {
 }
 
 
-/* Seul le contenu Cloud scroll ; le viewport de l'application reste fixe. */
 .file-table {
     flex: 1 1 auto;
     min-height: 0;
@@ -879,7 +877,7 @@ header button, header a, header input {
 }
 .text-input {
     width: 100%;
-    min-height: 34px;
+    min-height: 36px;
     padding: 0 10px;
     border: 1px solid var(--line);
     border-radius: 3px;
@@ -887,6 +885,136 @@ header button, header a, header input {
     color: var(--text);
     font-size: 10px;
 }
+.advanced-search-modal {
+    width: min(620px, 100%);
+}
+.advanced-search-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 6px;
+}
+.advanced-search-heading h3 {
+    margin-bottom: 6px;
+}
+.advanced-search-heading .modal-copy {
+    margin-bottom: 0;
+}
+.advanced-search-heading > span {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    padding: 5px 8px;
+    border: 1px solid #2b3139;
+    border-radius: 999px;
+    color: #9fa5ad;
+    font-size: 9px;
+    white-space: nowrap;
+}
+.advanced-filter-section {
+    padding: 13px 0;
+    border-top: 1px solid var(--line-soft);
+}
+.advanced-filter-section-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 10px;
+}
+.advanced-filter-section-title strong {
+    color: #d9dcd9;
+    font-size: 11px;
+    font-weight: 600;
+}
+.advanced-filter-section-title span {
+    color: #60666f;
+    font-size: 9px;
+    text-align: right;
+}
+.advanced-toggle-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+.advanced-toggle-grid label {
+    min-width: 0;
+    min-height: 38px;
+    padding: 0 11px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid #252b33;
+    border-radius: 10px;
+    background: #0f1216;
+    color: #b0b5bc;
+    font-size: 10px;
+    cursor: pointer;
+}
+.advanced-toggle-grid input {
+    accent-color: #737f8d;
+}
+.advanced-range-section {
+    display: grid;
+    gap: 8px;
+}
+.advanced-range-label,
+.advanced-range-scale {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+}
+.advanced-range-label {
+    color: #999fa7;
+    font-size: 10px;
+}
+.advanced-range-label strong {
+    color: #d4d7d9;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.advanced-range-scale {
+    color: #555c65;
+    font-size: 8px;
+}
+.advanced-range-section input[type="range"],
+.advanced-range-item input[type="range"] {
+    width: 100%;
+    margin: 0;
+    accent-color: #7a8795;
+}
+.advanced-modal-actions {
+    align-items: center;
+}
+.advanced-actions-spacer {
+    flex: 1 1 auto;
+}
+.modal-actions button.advanced-reset {
+    min-width: 92px;
+    color: #aeb3ba;
+}
+@media (max-width: 560px) {
+    .advanced-search-heading,
+    .advanced-filter-section-title {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+    }
+    .advanced-filter-section-title span {
+        text-align: left;
+    }
+    .advanced-toggle-grid {
+        grid-template-columns: 1fr;
+    }
+    .advanced-modal-actions {
+        flex-wrap: wrap;
+    }
+    .advanced-actions-spacer {
+        display: none;
+    }
+}
+
 .startup-overlay {
     position: fixed;
     inset: 0;
@@ -901,11 +1029,9 @@ header button, header a, header input {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 18px;
+    gap: 16px;
     overflow: hidden;
-    background:
-        radial-gradient(circle at 50% 46%, rgba(75, 86, 105, .12), transparent 34%),
-        #08090b;
+    background: #08090b;
     -webkit-app-region: drag;
 }
 .startup-glow {
@@ -931,17 +1057,38 @@ header button, header a, header input {
     font-size: clamp(22px, 2.8vw, 34px);
     font-weight: 650;
     letter-spacing: -.025em;
-    animation: startup-wordmark .9s .26s var(--motion) both;
+    animation: startup-wordmark .58s var(--motion) both;
+}
+.startup-scan-copy {
+    position: relative;
+    margin-top: -4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    color: #7d838c;
+    text-align: center;
+    pointer-events: none;
+    animation: startup-wordmark .45s .48s var(--motion) both;
+}
+.startup-scan-copy strong {
+    color: #b9bec5;
+    font-size: 11px;
+    font-weight: 550;
+}
+.startup-scan-copy span {
+    color: #626872;
+    font-size: 9px;
 }
 .startup-loader {
     position: relative;
     width: clamp(120px, 14vw, 180px);
     height: 2px;
-    margin-top: 8px;
+    margin-top: 2px;
     overflow: hidden;
     border-radius: 999px;
     background: #1c2026;
-    animation: startup-wordmark .8s .42s var(--motion) both;
+    animation: startup-wordmark .72s .32s var(--motion) both;
 }
 .startup-loader span {
     display: block;
@@ -949,7 +1096,7 @@ header button, header a, header input {
     height: 100%;
     border-radius: inherit;
     background: #7f8997;
-    animation: startup-loader 1.15s .25s ease-in-out infinite;
+    animation: startup-loader 1.35s .18s ease-in-out infinite;
 }
 
 .loading, .loading-inline {
@@ -1167,7 +1314,7 @@ header button, header a, header input {
     font-size: 14px;
 }
 
-/* Recherche globale du dernier aperçu Steam Cloud mis en cache. */
+
 .search-backdrop {
     padding: 28px;
 }
@@ -1342,7 +1489,7 @@ header button, header a, header input {
     line-height: 1.5;
 }
 
-/* Big Picture interaction polish */
+
 .cloud-card > button {
     position: relative;
     z-index: 2;
@@ -1446,7 +1593,7 @@ header button, header a, header input {
     color: #a7aaa5;
 }
 
-/* Linux uses a clean frameless Big Picture shell: only fullscreen and close. */
+
 .linux-shell {
     position: relative;
 }
@@ -1506,10 +1653,7 @@ header button, header a, header input {
     transform: scale(.92);
 }
 
-/* When browsing an opened Cloud, the Linux window controls are fixed and the
-   regular header is empty. Collapse that reserved header space so the Cloud
-   panel can sit directly beneath the window controls instead of starting far
-   below them. The home layout keeps its original spacing. */
+
 .linux-shell.cloud-open-shell {
     padding-top: 50px;
 }
@@ -1525,7 +1669,7 @@ header button, header a, header input {
     min-height: 0;
 }
 
-/* Lightweight ambient motion for the home screen. No video, canvas or shader. */
+
 .home-clouds {
     position: relative;
     isolation: isolate;
@@ -1562,16 +1706,13 @@ header button, header a, header input {
 }
 
 
-/* Startup is one coherent transition: splash -> complete application.
-   The shell never reveals individual controls/cards separately, which prevents
-   first-frame flashes and duplicate intro animations while status is loading. */
 .shell.intro-pending {
     opacity: 0;
     pointer-events: none;
 }
 .shell.intro-revealing {
     pointer-events: none;
-    animation: home-shell-reveal .44s .05s cubic-bezier(.22, .8, .25, 1) both;
+    animation: home-shell-reveal .56s .14s cubic-bezier(.22, .8, .25, 1) both;
 }
 .shell.intro-ready {
     opacity: 1;
@@ -1582,20 +1723,21 @@ header button, header a, header input {
     to { opacity: 1; }
 }
 
-/* Splash leaves the stage instead of being replaced abruptly. */
+
 .startup-splash.exiting {
     pointer-events: none;
-    animation: startup-exit .56s cubic-bezier(.4, 0, .2, 1) both;
+    animation: startup-exit .66s cubic-bezier(.4, 0, .2, 1) both;
 }
 .startup-splash.exiting .startup-logo {
-    animation: startup-logo-exit .46s cubic-bezier(.4, 0, .2, 1) both;
+    animation: startup-logo-exit .56s cubic-bezier(.4, 0, .2, 1) both;
 }
 .startup-splash.exiting .startup-wordmark,
-.startup-splash.exiting .startup-loader {
-    animation: startup-detail-exit .34s ease both;
+.startup-splash.exiting .startup-loader,
+.startup-splash.exiting .startup-scan-copy {
+    animation: startup-detail-exit .48s ease both;
 }
 .startup-splash.exiting .startup-glow {
-    animation: startup-glow-exit .52s ease both;
+    animation: startup-glow-exit .62s ease both;
 }
 
 @keyframes startup-exit {
@@ -1633,6 +1775,7 @@ header button, header a, header input {
     .startup-splash.exiting .startup-logo,
     .startup-splash.exiting .startup-wordmark,
     .startup-splash.exiting .startup-loader,
+    .startup-splash.exiting .startup-scan-copy,
     .startup-splash.exiting .startup-glow,
     .shell.intro-revealing {
         animation: none !important;
@@ -1641,7 +1784,7 @@ header button, header a, header input {
     .shell.intro-revealing { opacity: 1; }
 }
 
-/* Keep the startup animation above the already-rendered home screen. */
+
 .startup-splash.startup-overlay {
     position: fixed;
     inset: 0;
@@ -1650,9 +1793,6 @@ header button, header a, header input {
     z-index: 400;
 }
 
-/* --------------------------------------------------------------------------
-   Cloud workspace / transfer view — Big Picture visual language
-   -------------------------------------------------------------------------- */
 
 .cloud-view,
 .operation-screen {
@@ -2049,7 +2189,7 @@ header button, header a, header input {
     text-overflow: ellipsis;
 }
 
-/* Transfer / opening / saving view */
+
 .operation-screen {
     position: relative;
     flex: 1 1 auto;
@@ -2318,7 +2458,6 @@ header button, header a, header input {
 }
 
 
-/* Home-like loading transition for Cloud opening/saving. */
 .operation-screen {
     position: relative;
     justify-content: center;
@@ -2498,7 +2637,7 @@ header button, header a, header input {
     to { opacity: 1; }
 }
 
-/* Final override: cloud loading should match the home mockup, not the old popup card. */
+
 .operation-screen {
     position: relative;
     flex: 1 1 auto;
@@ -2697,7 +2836,7 @@ header button, header a, header input {
     }
 }
 
-/* Final loading transition: keep the home feel, no extra frame, only the center card morphs while side cards fade away. */
+
 .operation-screen {
     position: relative;
     flex: 1 1 auto;
@@ -2873,7 +3012,7 @@ header button, header a, header input {
     }
 }
 
-/* Seamless home -> Cloud operation transition. Keep the global chrome fixed. */
+
 .shell header {
     position: relative;
     justify-content: flex-end;
@@ -2971,7 +3110,6 @@ header button, header a, header input {
 }
 
 
-/* Exact home-card loading morph: same card geometry, only its inner content changes. */
 .cloud-card-content-stack {
     position: relative;
     width: 100%;
@@ -3116,7 +3254,7 @@ header button, header a, header input {
     margin-top: 0;
 }
 
-/* Tighter loading card polish: plain animated log line + animated state dot. */
+
 .cloud-loading-card .cloud-card-status.cloud-loading-status {
     background: var(--amber);
     box-shadow:
@@ -3202,7 +3340,7 @@ header button, header a, header input {
     }
 }
 
-/* Loading morph alignment + bidirectional state transitions. */
+
 .cloud-card-loading-content {
     justify-content: center;
     gap: 14px;
@@ -3233,21 +3371,21 @@ header button, header a, header input {
     margin: 2px auto 0;
 }
 
-/* Opening: amber -> green, then a subtle green heartbeat. */
+
 .cloud-loading-card .cloud-card-status.cloud-loading-status.syncing-in {
     animation:
         loading-dot-to-green 1.05s ease forwards,
         loading-dot-pulse 1.9s ease-in-out 1.08s infinite;
 }
 
-/* Synchronize / close: reverse the same state, green -> amber. */
+
 .cloud-loading-card .cloud-card-status.cloud-loading-status.syncing-out {
     animation:
         loading-dot-to-amber .82s ease forwards,
         loading-dot-amber-pulse 1.85s ease-in-out .84s infinite;
 }
 
-/* When returning to the home carousel, play the loading morph backwards. */
+
 .cloud-carousel.operation-returning {
     cursor: default;
 }
@@ -3325,7 +3463,7 @@ header button, header a, header input {
     to { opacity: var(--card-opacity, .08); filter: saturate(var(--card-saturation, .62)) brightness(var(--card-brightness, .58)); }
 }
 
-/* Final alignment fix for the loading morph content. */
+
 .cloud-loading-card .cloud-card-content-stack {
     display: grid;
     place-items: center;
@@ -3381,7 +3519,7 @@ header button, header a, header input {
     margin: 2px auto 0;
 }
 
-/* Opening phase must be centered before first paint; keep all loading elements on one axis. */
+
 .cloud-loading-card .cloud-card-loading-content {
     box-sizing: border-box;
     padding-inline: 12px;
@@ -3398,7 +3536,7 @@ header button, header a, header input {
     text-align: center;
 }
 
-/* Hard-center the opening morph as one unit, independent from the normal card layout. */
+
 .cloud-loading-card .cloud-card-content-stack {
     position: relative;
     display: block;
@@ -3463,7 +3601,7 @@ header button, header a, header input {
     order: 2;
 }
 
-/* Small cleanup: centered cloud card title, simple delete flow, parent row shortcut. */
+
 .cloud-card-title.compact-title {
     align-items: center;
     justify-content: center;
@@ -3490,7 +3628,7 @@ header button, header a, header input {
     display: none;
 }
 
-/* Keep normal and Cloud-loading states on the same responsive geometry. */
+
 .cloud-card {
     height: var(--carousel-card-height);
     min-height: 0;
@@ -3498,7 +3636,9 @@ header button, header a, header input {
     overflow: hidden;
 }
 .cloud-card-art {
-    /* Width and height come from the real artwork aspect ratio above. */
+
+    width: var(--carousel-art-size);
+    height: var(--carousel-art-size);
     flex: 0 0 auto;
     max-width: var(--carousel-art-size);
     max-height: var(--carousel-art-size);
@@ -3528,24 +3668,29 @@ header button, header a, header input {
         padding-top: 0;
     }
     .home-cloud-controls-row {
-        min-height: 48px;
+        min-height: 42px;
     }
     .home-cloud-filters button {
-        min-height: 44px;
-        padding-inline: 17px;
+        min-height: 38px;
+        padding-inline: 16px;
         font-size: 12px;
     }
+    .home-advanced-filter {
+        flex-basis: 38px;
+        width: 38px;
+        height: 38px;
+    }
     .home-cloud-search {
-        width: 44px;
-        height: 44px;
+        width: 38px;
+        height: 38px;
     }
     .home-cloud-search-toggle {
-        flex-basis: 42px;
-        width: 42px;
-        height: 42px;
+        flex-basis: 36px;
+        width: 36px;
+        height: 36px;
     }
     .cloud-card {
-        padding: 12px 15px;
+        padding: 12px 15px 8px;
         gap: 6px;
     }
     .cloud-card-art {
@@ -3596,24 +3741,30 @@ header button, header a, header input {
         margin-bottom: 4px;
     }
     .home-cloud-controls-row {
-        min-height: 42px;
+        min-height: 38px;
     }
     .home-cloud-filters button {
-        min-height: 40px;
-        padding-inline: 14px;
+        min-height: 36px;
+        padding-inline: 13px;
         font-size: 11px;
     }
+    .home-advanced-filter {
+        flex-basis: 36px;
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+    }
     .home-cloud-search {
-        width: 40px;
-        height: 40px;
+        width: 36px;
+        height: 36px;
     }
     .home-cloud-search-toggle {
-        flex-basis: 38px;
-        width: 38px;
-        height: 38px;
+        flex-basis: 34px;
+        width: 34px;
+        height: 34px;
     }
     .cloud-card {
-        padding: 9px 12px;
+        padding: 9px 12px 6px;
         gap: 5px;
     }
     .cloud-card-art {
@@ -3644,9 +3795,7 @@ header button, header a, header input {
     }
 }
 
-/* --------------------------------------------------------------------------
-   Simplified cloud explorer look + animated search reveal
-   -------------------------------------------------------------------------- */
+
 .cloud-view {
     border-radius: 24px;
     border-color: rgba(134, 150, 176, .22);
@@ -3829,7 +3978,7 @@ header button, header a, header input {
     }
 }
 
-/* Exact slot matching between home card and cloud-loading card. */
+
 .cloud-card-loading-content {
     justify-content: flex-start;
     gap: 0;
@@ -3892,7 +4041,7 @@ header button, header a, header input {
     margin: 0 auto;
 }
 
-/* Move the loading spinner slightly lower so it sits closer to the Open/Install button slot. */
+
 .cloud-loading-card .cloud-loading-action {
     min-height: clamp(52px, 6.2vh, 66px);
     align-items: flex-end;
@@ -3903,13 +4052,13 @@ header button, header a, header input {
     transform: translateY(6px);
 }
 
-/* Preserve natural casing in the cloud search input. */
+
 .cloud-search-bar input {
     text-transform: none;
     letter-spacing: 0;
 }
 
-/* About / contributor modal. */
+
 .about-modal-content {
     text-align: center;
 }
@@ -4009,9 +4158,7 @@ header button, header a, header input {
     }
 }
 
-/* --------------------------------------------------------------------------
-   Dynamic Steam Cloud home browser
-   -------------------------------------------------------------------------- */
+
 .home-clouds {
     gap: clamp(14px, 2.2vh, 24px);
 }
@@ -4034,7 +4181,7 @@ header button, header a, header input {
     width: 100%;
 }
 .home-clouds > .cloud-carousel {
-    /* Do not let a tall window create a huge empty gap above the cards. */
+
     flex: 0 1 560px;
     align-self: stretch;
     height: 560px;
@@ -4042,7 +4189,7 @@ header button, header a, header input {
     min-height: 0;
 }
 .home-cloud-controls-row {
-    min-height: 56px;
+    min-height: 48px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -4060,7 +4207,7 @@ header button, header a, header input {
     background: transparent;
 }
 .home-cloud-filters button {
-    min-height: clamp(46px, 3vw, 52px);
+    min-height: clamp(40px, 2.45vw, 44px);
     padding: 0 clamp(17px, 1.35vw, 24px);
     display: inline-flex;
     align-items: center;
@@ -4091,10 +4238,68 @@ header button, header a, header input {
     cursor: default;
 }
 
+.home-advanced-filter {
+    position: relative;
+    flex: 0 0 clamp(40px, 2.45vw, 44px);
+    width: clamp(40px, 2.45vw, 44px);
+    height: clamp(40px, 2.45vw, 44px);
+    min-height: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    appearance: none;
+    border: 1px solid #252b33;
+    border-radius: 8px;
+    background: #0e1013;
+    color: #7b828c;
+    box-shadow: none;
+    cursor: pointer;
+    transition: color .15s ease, background .15s ease, border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.home-advanced-filter:hover:not(:disabled) {
+    border-color: #3b444f;
+    background: #14181d;
+    color: #c2c6cc;
+}
+.home-advanced-filter.drawer-open,
+.home-advanced-filter.active {
+    border-color: #465260;
+    background: #181d23;
+    color: #e5e8eb;
+    box-shadow: inset 0 0 0 1px rgba(117, 135, 158, .08);
+}
+.home-advanced-filter:focus-visible {
+    outline: 1px solid #74787f;
+    outline-offset: 2px;
+}
+.home-advanced-filter:active:not(:disabled) {
+    transform: translateY(1px);
+}
+.home-advanced-filter > span {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    display: grid;
+    place-items: center;
+    border: 2px solid var(--bg);
+    border-radius: 999px;
+    background: #343b45;
+    color: #f1f2ef;
+    font-size: 9px;
+    font-weight: 650;
+}
+.home-advanced-filter:disabled {
+    cursor: default;
+    opacity: .5;
+}
+
 .home-cloud-search {
     flex: 0 0 auto;
-    width: clamp(46px, 3vw, 52px);
-    height: clamp(46px, 3vw, 52px);
+    width: clamp(40px, 2.45vw, 44px);
+    height: clamp(40px, 2.45vw, 44px);
     display: flex;
     align-items: center;
     justify-content: flex-start;
@@ -4116,9 +4321,9 @@ header button, header a, header input {
     box-shadow: 0 0 0 3px rgba(98, 116, 142, .08);
 }
 .home-cloud-search-toggle {
-    flex: 0 0 clamp(44px, 2.9vw, 50px);
-    width: clamp(44px, 2.9vw, 50px);
-    height: clamp(44px, 2.9vw, 50px);
+    flex: 0 0 clamp(38px, 2.35vw, 42px);
+    width: clamp(38px, 2.35vw, 42px);
+    height: clamp(38px, 2.35vw, 42px);
     min-height: 0;
     padding: 0;
     display: grid;
@@ -4213,6 +4418,41 @@ header button, header a, header input {
     pointer-events: none;
 }
 
+.home-advanced-search-loading {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: clamp(300px, 50vh, 500px);
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+}
+.home-advanced-search-orbit {
+    width: 34px;
+    height: 34px;
+    position: relative;
+    border: 1px solid rgba(126, 139, 154, .16);
+    border-radius: 50%;
+}
+.home-advanced-search-orbit::before,
+.home-advanced-search-orbit span {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    border-top-color: #7e8b9a;
+    animation: home-advanced-search-spin .9s linear infinite;
+}
+.home-advanced-search-orbit span {
+    inset: 9px;
+    border-top-color: #4f5966;
+    animation-duration: 1.35s;
+    animation-direction: reverse;
+}
+@keyframes home-advanced-search-spin {
+    to { transform: rotate(360deg); }
+}
+
 .home-cloud-empty {
     width: min(760px, calc(100% - 44px));
     flex: 1 1 auto;
@@ -4268,18 +4508,23 @@ header button, header a, header input {
         width: calc(100% - 8px);
     }
     .home-cloud-filters button {
-        min-height: 44px;
+        min-height: 40px;
         padding-inline: 12px;
         font-size: 12px;
     }
+    .home-advanced-filter {
+        flex-basis: 40px;
+        width: 40px;
+        height: 40px;
+    }
     .home-cloud-search {
-        width: 44px;
-        height: 44px;
+        width: 40px;
+        height: 40px;
     }
     .home-cloud-search-toggle {
-        flex-basis: 42px;
-        width: 42px;
-        height: 42px;
+        flex-basis: 38px;
+        width: 38px;
+        height: 38px;
     }
     .home-cloud-search.expanded {
         width: min(240px, calc(100vw - 28px));
@@ -4287,18 +4532,15 @@ header button, header a, header input {
 }
 
 
-/* --------------------------------------------------------------------------
-   Stable inner layout for responsive home cards
-   Keep the outer carousel geometry unchanged; only the card contents scale.
-   -------------------------------------------------------------------------- */
 .cloud-card {
     padding: var(--carousel-card-padding, 18px);
+    padding-bottom: var(--carousel-card-bottom-padding, 10px);
     gap: var(--carousel-card-gap, 10px);
 }
 .cloud-card-art {
-    margin-top: 0;
-    width: calc(var(--carousel-art-size) * var(--art-width-factor));
-    height: calc(var(--carousel-art-size) * var(--art-height-factor));
+    margin-top: var(--carousel-art-top-offset, 18px);
+    width: var(--carousel-art-size);
+    height: var(--carousel-art-size);
     max-width: var(--carousel-art-size);
     max-height: var(--carousel-art-size);
     flex: 0 0 auto;
@@ -4306,27 +4548,75 @@ header button, header a, header input {
 .cloud-card-content-stack {
     flex: 1 1 0;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     min-height: 0;
     overflow: hidden;
 }
 .cloud-card-normal-content {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     height: 100%;
     min-height: 0;
-    justify-content: space-between;
+    overflow: hidden;
+    justify-content: flex-start;
     gap: 8px;
 }
 .cloud-card-details {
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
     gap: clamp(5px, 1vh, 9px);
-    padding-top: clamp(1px, .45vh, 5px);
+    padding-top: 0;
+    transform: translateY(clamp(-4px, -0.45vh, 2px));
+}
+.cloud-card-summary {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: #a7acb2;
+    font-size: calc(var(--carousel-meta-size, 12px) * 0.94);
+    line-height: 1.22;
+    text-align: center;
+}
+.cloud-card-summary > span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cloud-card-summary > span:first-child {
+    color: #c2c7ce;
+}
+.cloud-card-title.compact-title {
+    display: block;
+    flex: 0 1 auto;
+    width: min(82%, 250px);
+    max-width: min(82%, 250px);
+    min-width: 0;
+    overflow: hidden;
+    text-align: center;
 }
 .cloud-card-title.compact-title strong {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: var(--carousel-title-size, 18px);
     line-height: 1.16;
+    text-align: center;
 }
 .cloud-card-normal-content .cloud-card-usage,
 .cloud-card-usage {
@@ -4340,37 +4630,39 @@ header button, header a, header input {
     flex: 0 0 auto;
     min-height: var(--carousel-action-height, 44px);
     height: var(--carousel-action-height, 44px);
-    margin-top: 0;
+    margin-top: auto;
     font-size: var(--carousel-action-size, 13px);
 }
 
-/* On very short windows, preserve readable labels and reclaim space from art. */
+
 @media (max-height: 620px) {
     .cloud-card-art {
-        width: calc(var(--carousel-art-size) * var(--art-width-factor) * .92);
-        height: calc(var(--carousel-art-size) * var(--art-height-factor) * .92);
+        margin-top: calc(var(--carousel-art-top-offset, 18px) * .68);
+        width: calc(var(--carousel-art-size) * .92);
+        height: calc(var(--carousel-art-size) * .92);
         max-width: calc(var(--carousel-art-size) * .92);
         max-height: calc(var(--carousel-art-size) * .92);
     }
     .cloud-card-details {
         gap: 4px;
         padding-top: 0;
+        transform: translateY(0);
     }
 }
 @media (max-height: 550px) {
     .cloud-card-art {
-        width: calc(var(--carousel-art-size) * var(--art-width-factor) * .84);
-        height: calc(var(--carousel-art-size) * var(--art-height-factor) * .84);
+        margin-top: calc(var(--carousel-art-top-offset, 18px) * .45);
+        width: calc(var(--carousel-art-size) * .84);
+        height: calc(var(--carousel-art-size) * .84);
         max-width: calc(var(--carousel-art-size) * .84);
         max-height: calc(var(--carousel-art-size) * .84);
     }
+    .cloud-card-details {
+        transform: translateY(1px);
+    }
 }
 
-/* --------------------------------------------------------------------------
-   Home vertical centering
-   Controls stay anchored in the first row; cards stay centered in the entire
-   remaining viewport, even on very tall windows.
-   -------------------------------------------------------------------------- */
+
 .home-clouds {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -4412,12 +4704,7 @@ header button, header a, header input {
     }
 }
 
-/* --------------------------------------------------------------------------
-   True viewport-Y centering for the home carousel
-   On normal/tall windows the cards are centered on the actual window midpoint,
-   not on the leftover area below the filter row. Compact heights keep the
-   in-flow layout so controls and cards can never overlap.
-   -------------------------------------------------------------------------- */
+
 @media (min-height: 621px) {
     .home-clouds > .cloud-carousel {
         position: fixed;
@@ -4448,4 +4735,410 @@ header button, header a, header input {
         transform: none;
         margin-block: auto;
     }
+}
+
+
+.cloud-carousel .cloud-card {
+    contain: layout paint style;
+}
+
+
+.advanced-drawer-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    overflow: hidden;
+    background: rgba(3, 4, 6, .08);
+    animation: advanced-drawer-layer-in .22s ease-out both;
+}
+.advanced-drawer-layer.closing {
+    animation: advanced-drawer-layer-out .22s ease-in both;
+}
+.advanced-search-drawer {
+    position: absolute;
+    top: 54px;
+    right: 12px;
+    bottom: 14px;
+    width: clamp(300px, 25vw, 360px);
+    min-width: 0;
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #343b44 transparent;
+    border: 1px solid #2c333c;
+    border-radius: 17px;
+    background: linear-gradient(180deg, rgba(17, 20, 25, .99), rgba(10, 12, 15, .99));
+    box-shadow: -24px 24px 70px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .035);
+    animation: advanced-drawer-in .26s var(--motion) both;
+}
+.advanced-search-drawer.closing {
+    animation: advanced-drawer-out .22s ease-in both;
+}
+.advanced-search-panel-content {
+    min-height: 100%;
+    padding: 18px 18px 14px;
+    display: flex;
+    flex-direction: column;
+}
+.advanced-search-heading {
+    align-items: flex-start;
+    margin-bottom: 4px;
+}
+.advanced-search-heading h3 {
+    margin: 0 0 5px;
+    color: #f0f1ee;
+    font-size: 15px;
+    font-weight: 650;
+}
+.advanced-search-heading .modal-copy {
+    margin: 0;
+    color: #666d76;
+    font-size: 9px;
+    line-height: 1.4;
+}
+.advanced-search-heading-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.advanced-search-heading-actions > span {
+    padding: 4px 7px;
+    border: 1px solid #2b3139;
+    border-radius: 999px;
+    color: #9fa5ad;
+    font-size: 8px;
+    white-space: nowrap;
+}
+.advanced-drawer-close {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #8e949d;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+.advanced-drawer-close:hover {
+    color: #e5e7e9;
+    background: rgba(255,255,255,.035);
+}
+.advanced-search-drawer .advanced-filter-section {
+    padding: 11px 0;
+}
+.advanced-search-drawer > .advanced-search-panel-content > .advanced-filter-section {
+    border-bottom: 1px solid var(--line-soft);
+}
+.advanced-search-drawer .advanced-filter-section-title {
+    margin-bottom: 7px;
+}
+.advanced-search-drawer .advanced-filter-section-title strong {
+    font-size: 10px;
+}
+.advanced-choice-section {
+    display: grid;
+    gap: 8px;
+}
+.advanced-segmented {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+}
+.advanced-segmented button {
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 8px;
+    border: 1px solid #29313a;
+    border-radius: 8px;
+    background: #0d1014;
+    color: #8f969f;
+    font-size: 9px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.advanced-segmented button:hover {
+    border-color: #414b57;
+    background: #141920;
+    color: #d4d7db;
+}
+.advanced-segmented button.active {
+    border-color: #505d6b;
+    background: #1a2027;
+    color: #f0f1ee;
+}
+.advanced-segmented button:disabled {
+    border-color: #20262d;
+    background: #0b0e12;
+    color: #464c54;
+    cursor: default;
+    opacity: .55;
+}
+.advanced-segmented button:disabled:hover {
+    border-color: #20262d;
+    background: #0b0e12;
+    color: #464c54;
+}
+.advanced-filter-note {
+    color: #666d76;
+    font-size: 8px;
+    line-height: 1.35;
+}
+.advanced-range-group {
+    display: grid;
+    gap: 8px;
+}
+.advanced-range-list {
+    display: grid;
+    gap: 15px;
+}
+.advanced-range-item {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+}
+.locked-filter input[type="range"] {
+    opacity: .34;
+    cursor: default;
+}
+.locked-filter .advanced-range-scale,
+.locked-filter .advanced-range-label span {
+    color: #565d66;
+}
+.advanced-toggle-stack {
+    display: grid;
+    gap: 4px;
+}
+.advanced-toggle-stack label {
+    min-height: 28px;
+    padding: 0 3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    background: transparent;
+    color: #afb4bb;
+    font-size: 10px;
+    cursor: pointer;
+}
+.advanced-toggle-stack input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: #7e8b9a;
+}
+.advanced-search-drawer .advanced-range-item {
+    gap: 7px;
+}
+.advanced-search-drawer .advanced-range-label {
+    font-size: 9px;
+}
+.advanced-search-drawer .advanced-range-label strong {
+    font-size: 9px;
+}
+.advanced-search-drawer .advanced-range-scale {
+    font-size: 7px;
+}
+.advanced-search-drawer input[type="range"] {
+    cursor: pointer;
+}
+.advanced-search-status {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid #20262d;
+    border-radius: 8px;
+    background: rgba(255,255,255,.018);
+    color: #858c95;
+    font-size: 9px;
+    line-height: 1.35;
+}
+.advanced-drawer-footer {
+    margin-top: auto;
+    padding-top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-top: 1px solid var(--line-soft);
+}
+.advanced-drawer-footer button {
+    min-height: 34px;
+    padding: 0 13px;
+    border: 1px solid #2d343d;
+    border-radius: 8px;
+    background: #111419;
+    color: #b5bac1;
+    font-size: 10px;
+    cursor: pointer;
+}
+.advanced-drawer-footer button:hover {
+    border-color: #48525e;
+    background: #181d23;
+    color: #f0f1ee;
+}
+.advanced-drawer-footer button.primary {
+    border-color: #4b5662;
+    background: #20262d;
+    color: #f2f3f0;
+}
+.advanced-reset {
+    color: #939aa3 !important;
+}
+.advanced-drawer-footer button:disabled {
+    opacity: .48;
+    cursor: default;
+}
+@keyframes advanced-drawer-in {
+    from { opacity: .25; transform: translateX(calc(100% + 22px)); }
+    to { opacity: 1; transform: translateX(0); }
+}
+@keyframes advanced-drawer-out {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: .15; transform: translateX(calc(100% + 22px)); }
+}
+@keyframes advanced-drawer-layer-in {
+    from { background: rgba(3, 4, 6, 0); }
+    to { background: rgba(3, 4, 6, .08); }
+}
+@keyframes advanced-drawer-layer-out {
+    from { background: rgba(3, 4, 6, .08); }
+    to { background: rgba(3, 4, 6, 0); }
+}
+@media (max-width: 720px) {
+    .advanced-search-drawer {
+        top: 48px;
+        right: 8px;
+        bottom: 8px;
+        width: min(330px, calc(100% - 16px));
+    }
+}
+@media (max-height: 620px) {
+    .advanced-search-drawer {
+        top: 42px;
+        bottom: 8px;
+    }
+    .advanced-search-panel-content {
+        padding-top: 13px;
+        padding-bottom: 12px;
+    }
+    .advanced-search-drawer .advanced-filter-section {
+        padding: 8px 0;
+    }
+}
+
+
+.cloud-card-content-stack {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    grid-template-areas: none !important;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+.cloud-card-persistent-details {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: clamp(4px, .7vh, 7px);
+    margin: 0 0 7px;
+    padding: 0;
+    transform: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+}
+.cloud-card-persistent-details .cloud-card-title,
+.cloud-card-persistent-details .cloud-card-summary {
+    width: 100%;
+    min-width: 0;
+}
+.cloud-card-normal-content,
+.cloud-card-loading-content,
+.cloud-loading-card .cloud-card-normal-content,
+.cloud-loading-card .cloud-card-loading-content {
+    grid-column: 1 !important;
+    grid-row: 2 !important;
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+}
+.cloud-card-normal-content .cloud-card-usage,
+.cloud-card-loading-content .cloud-card-usage {
+    margin-top: 0 !important;
+}
+.cloud-card-loading-content {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(5px) !important;
+    filter: blur(3px);
+}
+.cloud-loading-card .cloud-card-normal-content {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-5px) !important;
+    filter: blur(3px);
+}
+.cloud-loading-card .cloud-card-loading-content {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) !important;
+    filter: blur(0);
+}
+.cloud-loading-card .loading-slot-usage {
+    margin-top: 0 !important;
+    min-height: 42px;
+}
+.cloud-loading-card .cloud-loading-action {
+    width: 100%;
+    min-height: var(--carousel-action-height, 44px) !important;
+    margin-top: auto !important;
+    padding: 0 0 4px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+.cloud-loading-card .cloud-loading-orbit {
+    margin: 0 auto !important;
+    transform: none !important;
+}
+
+
+.cloud-carousel.operation-returning .cloud-returning-card .cloud-card-persistent-details {
+    animation: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+}
+.cloud-carousel.operation-returning .cloud-returning-card .cloud-card-loading-content {
+    animation: none !important;
+    opacity: 0 !important;
+    transform: translateY(4px) !important;
+    filter: blur(3px) !important;
+    transition: opacity .24s ease, transform .28s var(--motion), filter .24s ease !important;
+}
+.cloud-carousel.operation-returning .cloud-returning-card .cloud-card-normal-content {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+    filter: blur(0) !important;
+    transition: opacity .30s .05s ease, transform .32s .05s var(--motion), filter .28s .05s ease !important;
 }

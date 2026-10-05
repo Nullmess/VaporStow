@@ -2,9 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, shell, screen } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { games, type GameDefinition, type GameId } from './games';
+import type { GameDefinition, GameId } from './games';
+import { discoverSteamCloudGames } from './lib/steamCloudDiscovery';
+import { currentExternalCatalogGames, currentExternalCatalogStats, refreshExternalCatalogDiscovery, startExternalCatalogDiscovery, type ExternalCatalogSearchCriteria } from './lib/steamCatalogDiscovery';
 import * as cloudFs from './lib/cloudFs';
 import * as cloudIndex from './lib/cloudIndex';
+import * as carrierStorage from './lib/carrierStorage';
 import * as steam from './lib/steam';
 
 let mainWindow: BrowserWindow | null = null;
@@ -31,7 +34,6 @@ async function spawnDetached(command: string, args: string[]): Promise<boolean> 
             });
             child.once('error', () => finish(false));
 
-            // Borner l'attente du launcher pour ne jamais bloquer une requête IPC.
             setTimeout(() => finish(false), 1800).unref();
         } catch {
             finish(false);
@@ -53,7 +55,6 @@ async function openDirectoryInDefaultFileManager(target: string): Promise<void> 
         if (await spawnDetached(command, args)) return;
     }
 
-    // Borner le fallback Electron même si le portal Linux reste bloqué.
     const result = await Promise.race([
         shell.openPath(target).then((message) => ({ done: true, message })),
         new Promise<{ done: false; message: string }>((resolve) =>
@@ -71,7 +72,6 @@ async function revealInDefaultFileManager(target: string): Promise<void> {
     } else if (process.platform === 'darwin') {
         if (await spawnDetached('open', ['-R', target])) return;
     } else {
-        // Utiliser l'intégration desktop Electron pour révéler l'entrée si possible.
         try {
             shell.showItemInFolder(target);
             return;
@@ -82,32 +82,81 @@ async function revealInDefaultFileManager(target: string): Promise<void> {
         }
     }
 
-    // Garder un fallback pour les desktop environments atypiques.
     await openDirectoryInDefaultFileManager(path.dirname(target));
 }
 
 
-// Guard des fenêtres et process de jeu.
 
 type BackgroundGuard = { timer: NodeJS.Timeout; busy: boolean; lastMode: string; affected: number; startedAt: number; stopped: boolean };
+const detectedGames = new Map<GameId, GameDefinition>();
 const backgroundGuards = new Map<GameId, BackgroundGuard>();
 const managedGameSessions = new Set<GameId>();
 const splitRestoreProgress = new Map<GameId, cloudFs.SplitRestoreProgress>();
 const pendingIndexSnapshots = new Map<GameId, cloudIndex.CloudIndexSnapshot>();
+const carrierHydratedSessions = new Set<GameId>();
+const EMPTY_INSTALL_INFO: steam.InstallInfo = {
+    installed: false,
+    installing: false,
+    library: null,
+    manifest: null,
+    installDir: null,
+    sizeOnDisk: 0
+};
 let quitCleanupStarted = false;
 let quitCleanupFinished = false;
 let rendererClosePending = false;
 let rendererCloseApproved = false;
 let rendererQuitRequested = false;
+let catalogBackgroundStarted = false;
 
 function gameById(id: GameId): GameDefinition {
-    const game = games.find((candidate) => candidate.id === id);
-    if (!game) throw new Error('Unknown game.');
+    const game = detectedGames.get(id);
+    if (!game) throw new Error('Unknown or no longer detected Steam Cloud.');
     return game;
+}
+
+function replaceDetectedGames(games: GameDefinition[]): void {
+    detectedGames.clear();
+    for (const game of games) detectedGames.set(game.id, game);
+}
+
+function mergeDetectedGames(localGames: GameDefinition[], externalGames: GameDefinition[]): GameDefinition[] {
+    const merged = new Map<string, GameDefinition>();
+    for (const game of externalGames) {
+        if (game.discoverySource !== 'catalog' || !game.isFreeApp || game.storePriceCents !== 0) continue;
+        merged.set(game.appId, game);
+    }
+    for (const game of localGames) {
+        if (game.discoverySource !== 'local') continue;
+        merged.set(game.appId, game);
+    }
+    return [...merged.values()];
 }
 
 function splitCacheRoot(id: GameId): string {
     return path.join(app.getPath('userData'), 'split-cache', id);
+}
+
+function carrierWorkspaceRoot(id: GameId): string {
+    return path.join(app.getPath('userData'), 'carrier-workspaces', id);
+}
+
+function physicalCloudRoot(
+    game: GameDefinition,
+    env: Awaited<ReturnType<typeof getEnvironment>>,
+    install: steam.InstallInfo
+): string | null {
+    return game.getCloudRoot({
+        steamLibraries: env.libraries,
+        steamId64: env.steamId64,
+        installedLibrary: install.library,
+        installedDir: install.installDir
+    });
+}
+
+function logicalCloudRoot(game: GameDefinition, physicalRoot: string | null): string | null {
+    if (!physicalRoot) return null;
+    return game.storageMode === 'carrier' ? carrierWorkspaceRoot(game.id) : physicalRoot;
 }
 
 async function getEnvironment() {
@@ -115,6 +164,28 @@ async function getEnvironment() {
     const libraries = await steam.detectLibraries(steamRoot);
     const steamId64 = await steam.detectSteamId64(steamRoot);
     return { steamRoot, libraries, steamId64 };
+}
+
+function ensureCatalogBackgroundRefresh(steamRoot: string | null): void {
+    if (!steamRoot || catalogBackgroundStarted) return;
+    catalogBackgroundStarted = true;
+    const cacheDir = path.join(app.getPath('userData'), 'catalog-cache');
+
+    void (async () => {
+        const cachedIndex = path.join(cacheDir, 'cloud-catalog.json');
+        const bundledIndex = path.join(app.getAppPath(), 'assets', 'data', 'cloud-catalog.json');
+        try {
+            await fs.promises.access(cachedIndex);
+        } catch {
+            try {
+                await fs.promises.mkdir(cacheDir, { recursive: true });
+                await fs.promises.copyFile(bundledIndex, cachedIndex);
+            } catch {
+            }
+        }
+        await startExternalCatalogDiscovery(cacheDir, steamRoot);
+    })();
+
 }
 
 
@@ -125,10 +196,10 @@ async function stopBackgroundGuard(id: GameId): Promise<boolean> {
         clearTimeout(guard.timer);
         backgroundGuards.delete(id);
     }
+    carrierHydratedSessions.delete(id);
     try {
         await steam.cleanupBackgroundApp(gameById(id));
     } catch {
-        // Tolérer un cleanup refusé par le compositor sans bloquer l'application.
     }
     return Boolean(guard);
 }
@@ -140,7 +211,6 @@ function refocusVaporStow() {
         mainWindow.moveTop();
         mainWindow.focus();
     } catch {
-        // Tolérer les refus de focus explicite sur certains compositors Wayland.
     }
 }
 
@@ -148,29 +218,26 @@ function applyFullscreenPriority(enabled: boolean) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     try {
-        // Le niveau screen-saver est le niveau Electron le plus élevé prévu pour
-        // garder une fenêtre au-dessus des fenêtres normales et des jeux.
         mainWindow.setAlwaysOnTop(enabled, enabled ? 'screen-saver' : 'normal', enabled ? 1 : 0);
     } catch {
-        // Certains compositors Linux/Wayland peuvent limiter le niveau demandé.
     }
 
     if (process.platform !== 'win32') {
         try {
             mainWindow.setVisibleOnAllWorkspaces(enabled, { visibleOnFullScreen: enabled });
         } catch {
-            // La prise en charge dépend du gestionnaire de fenêtres.
         }
     }
 
     if (enabled) {
-        try { mainWindow.setFocusable(true); } catch { /* best effort */ }
+        try { mainWindow.setFocusable(true); } catch {}
         refocusVaporStow();
     }
 }
 
 async function startBackgroundGuard(id: GameId) {
     await stopBackgroundGuard(id);
+    carrierHydratedSessions.delete(id);
     const game = gameById(id);
     const env = await getEnvironment();
     const install = await steam.findInstalledApp(env.libraries, game.appId);
@@ -200,7 +267,6 @@ async function startBackgroundGuard(id: GameId) {
 
     const schedule = () => {
         if (guard.stopped) return;
-        // Poll rapidement au démarrage puis ralentir pour limiter les requêtes système.
         const age = Date.now() - guard.startedAt;
         const delay = age < 15_000 ? 60 : 400;
         guard.timer = setTimeout(async () => {
@@ -209,7 +275,6 @@ async function startBackgroundGuard(id: GameId) {
         }, delay);
     };
 
-    // Démarrer le guard avant le jeu pour capter sa première fenêtre.
     await tick();
     backgroundGuards.set(id, guard);
     managedGameSessions.add(id);
@@ -221,7 +286,6 @@ async function startBackgroundGuard(id: GameId) {
 type UsageMemoryEntry = {
     cloudBytes?: number;
     cloudFiles?: number;
-    // Conserver ce field 1.0.0 pour les anciennes builds de développement.
     bytes?: number;
     updatedAt: string;
 };
@@ -251,30 +315,33 @@ async function writeUsageMemory(id: GameId, bytes: number, files: number): Promi
 async function gameStatus(
     game: GameDefinition,
     env: Awaited<ReturnType<typeof getEnvironment>>,
-    memory: UsageMemory
+    memory: UsageMemory,
+    options: {
+        install?: steam.InstallInfo;
+        running?: boolean;
+        deep?: boolean;
+        inLibrary?: boolean;
+    } = {}
 ) {
-    const install = await steam.findInstalledApp(env.libraries, game.appId);
-    const running = install.installed ? await steam.isAppRunning(game, install) : false;
-    const cloudRoot = game.getCloudRoot({
-        steamLibraries: env.libraries,
-        steamId64: env.steamId64,
-        installedLibrary: install.library
-    });
-    const cloudRootExists = Boolean(cloudRoot && fs.existsSync(cloudRoot));
+    const install = options.install ?? await steam.findInstalledApp(env.libraries, game.appId);
+    const running = options.running ?? (install.installed ? await steam.isAppRunning(game, install) : false);
+    const physicalRoot = physicalCloudRoot(game, env, install);
+    const cloudRoot = logicalCloudRoot(game, physicalRoot);
+    const cloudRootExists = Boolean(physicalRoot && fs.existsSync(physicalRoot));
+    const inspectStorage = options.deep ?? true;
 
     let disk: { free: number; total: number } | null = null;
-    try {
-        if (cloudRoot) disk = await cloudFs.statFsFor(cloudRoot);
-    } catch {
-        disk = null;
+    let audit = { root: cloudRoot ? path.join(cloudRoot, 'CloudAudit') : null, bytes: 0, files: 0 };
+    let cloud = { bytes: 0, files: 0 };
+    if (inspectStorage && cloudRoot) {
+        try {
+            disk = await cloudFs.statFsFor(physicalRoot ?? cloudRoot);
+        } catch {
+            disk = null;
+        }
+        audit = await cloudFs.listAuditTree(cloudRoot);
+        if (physicalRoot) cloud = await cloudFs.treeStats(physicalRoot);
     }
-
-    const audit = cloudRoot
-        ? await cloudFs.listAuditTree(cloudRoot)
-        : { root: null, bytes: 0, files: 0 };
-    const cloud = cloudRoot
-        ? await cloudFs.treeStats(cloudRoot)
-        : { bytes: 0, files: 0 };
     const remembered = memory[game.id];
 
     return {
@@ -285,13 +352,25 @@ async function gameStatus(
         quotaBytes: game.quotaBytes,
         maxFiles: game.maxFiles,
         cloudPattern: game.cloudPattern,
+        storageMode: game.storageMode,
+        cloudRuleCount: game.cloudRules.length,
+        discoverySource: game.discoverySource,
+        isFreeApp: game.isFreeApp,
+        storePriceCents: game.storePriceCents,
+        storePriceLabel: game.storePriceLabel,
+        artworkUrls: game.artworkUrls,
         platformSupported: game.platforms.includes(process.platform),
         nativeCloudSupport: game.nativeCloudPlatforms.includes(process.platform),
         protonExperimental: Boolean(game.protonExperimental && process.platform === 'linux'),
+        inLibrary: options.inLibrary ?? install.installed,
         installed: install.installed,
         installing: install.installing,
         installDir: install.installDir,
-        installSize: install.sizeOnDisk > 0 ? install.sizeOnDisk : game.installSizeFallbackBytes,
+        installSize: install.installed && install.sizeOnDisk > 0
+            ? install.sizeOnDisk
+            : game.installSizeFallbackBytes > 0
+                ? game.installSizeFallbackBytes
+                : install.sizeOnDisk,
         running,
         cloudRoot,
         cloudRootExists,
@@ -311,8 +390,33 @@ async function fullStatus() {
     const memory = await readUsageMemory();
     const steamRunning = Boolean(env.steamRoot) && await steam.isSteamRunning();
     const steamCloudLog = await steam.detectCloudLogPath(env.steamRoot);
-    const statuses = [];
-    for (const game of games) statuses.push(await gameStatus(game, env, memory));
+    const localGames = await discoverSteamCloudGames(env.steamRoot, env.libraries, env.steamId64);
+
+    const [installedApps, libraryAppIds] = await Promise.all([
+        steam.scanInstalledApps(env.libraries),
+        steam.scanLibraryAppIds(env.steamRoot, env.steamId64)
+    ]);
+    for (const appId of installedApps.keys()) libraryAppIds.add(appId);
+
+    const games = mergeDetectedGames(localGames, currentExternalCatalogGames());
+    replaceDetectedGames(games);
+
+    const installedEntries = games.flatMap((game) => {
+        const install = installedApps.get(game.appId);
+        return install?.installed ? [{ game, install }] : [];
+    });
+    const runningGameIds = await steam.detectRunningGameIds(installedEntries);
+
+    const statuses = await Promise.all(games.map((game) => {
+        const install = installedApps.get(game.appId) ?? EMPTY_INSTALL_INFO;
+        const running = runningGameIds.has(game.id);
+        return gameStatus(game, env, memory, {
+            install,
+            running,
+            inLibrary: libraryAppIds.has(game.appId),
+            deep: running
+        });
+    }));
 
     return {
         appVersion: app.getVersion(),
@@ -322,6 +426,7 @@ async function fullStatus() {
         steamRoot: env.steamRoot,
         steamCloudLog,
         steamId64: env.steamId64,
+        catalogDiscovery: currentExternalCatalogStats(),
         games: statuses
     };
 }
@@ -329,24 +434,52 @@ async function fullStatus() {
 async function requireRunningGame(id: GameId) {
     const game = gameById(id);
     const env = await getEnvironment();
-    const status = await gameStatus(game, env, await readUsageMemory());
+    const install = await steam.findInstalledApp(env.libraries, game.appId);
+    const status = await gameStatus(game, env, await readUsageMemory(), { install });
+    const physicalRoot = physicalCloudRoot(game, env, install);
 
     if (!status.running) {
         throw new Error('The Steam session is not open for this volume.');
     }
-    if (!status.cloudRoot) {
+    if (!status.cloudRoot || !physicalRoot) {
         throw new Error('No local Auto-Cloud path is available for this game on the current platform.');
     }
 
-    return { game, env, status };
+    return { game, env, install, status, physicalRoot };
 }
 
 
 
-// API IPC exposée au renderer.
 
 function registerIpc() {
     ipcMain.handle('status:get', fullStatus);
+    ipcMain.handle('catalog:start-background', async () => {
+        const env = await getEnvironment();
+        ensureCatalogBackgroundRefresh(env.steamRoot);
+        return true;
+    });
+    ipcMain.handle('catalog:search', async (_event, criteria: ExternalCatalogSearchCriteria = {}) => {
+        const env = await getEnvironment();
+        const steamId64 = await steam.detectSteamId64(env.steamRoot);
+        const libraryAppIds = await steam.scanLibraryAppIds(env.steamRoot, steamId64);
+        if (env.steamRoot) {
+            const installedApps = await steam.scanInstalledApps(await steam.detectLibraries(env.steamRoot));
+            for (const [appId, install] of installedApps) {
+                if (install.installed) libraryAppIds.add(appId);
+            }
+        }
+        const outsideCriteria: ExternalCatalogSearchCriteria = {
+            ...criteria,
+            excludeAppIds: [...libraryAppIds]
+        };
+
+        await refreshExternalCatalogDiscovery(
+            path.join(app.getPath('userData'), 'catalog-cache'),
+            env.steamRoot,
+            outsideCriteria
+        );
+        return fullStatus();
+    });
 
     ipcMain.handle('steam:download', async () => {
         await shell.openExternal('https://store.steampowered.com/about/');
@@ -379,6 +512,17 @@ function registerIpc() {
     ipcMain.handle('game:install', async (_event, id: GameId) => {
         const game = gameById(id);
         const steamRoot = await steam.detectSteamRoot();
+
+        const steamId64 = await steam.detectSteamId64(steamRoot);
+        const libraryAppIds = await steam.scanLibraryAppIds(steamRoot, steamId64);
+        const installed = await steam.findInstalledApp(await steam.detectLibraries(steamRoot), game.appId);
+        const inLibrary = installed.installed || libraryAppIds.has(game.appId);
+
+        if (!inLibrary && game.discoverySource === 'catalog') {
+            if (steamRoot) await shell.openExternal(`steam://store/${game.appId}`);
+            else await shell.openExternal(game.storeUrl);
+            return;
+        }
         await shell.openExternal(steamRoot ? game.steamInstallUrl : game.storeUrl);
     });
 
@@ -413,18 +557,38 @@ function registerIpc() {
     });
 
     ipcMain.handle('cloud:prepare-sync', async (_event, id: GameId) => {
-        const { game, status } = await requireRunningGame(id);
-        return cloudFs.prepareSplitFilesForSync(
+        const { game, status, physicalRoot } = await requireRunningGame(id);
+        const preparation = await cloudFs.prepareSplitFilesForSync(
             status.cloudRoot!,
             game.quotaBytes,
             game.maxFiles,
             splitCacheRoot(id)
         );
+        if (game.storageMode === 'carrier') {
+            const rule = game.cloudRules[0];
+            if (!rule) throw new Error('No compatible Steam Cloud carrier rule is available.');
+            await carrierStorage.packWorkspace(
+                status.cloudRoot!,
+                physicalRoot,
+                rule.pattern,
+                rule.recursive,
+                game.quotaBytes,
+                game.maxFiles
+            );
+        }
+        return preparation;
     });
 
     ipcMain.handle('cloud:content-summary', async (_event, id: GameId) => {
         const { status } = await requireRunningGame(id);
         return cloudFs.cloudContentSummary(status.cloudRoot!);
+    });
+
+    ipcMain.handle('cloud:audit-usage', async (_event, id: GameId) => {
+        const game = gameById(id);
+        const env = await getEnvironment();
+        const status = await gameStatus(game, env, await readUsageMemory(), { deep: true });
+        return { bytes: status.auditBytes, files: status.auditFiles };
     });
 
     ipcMain.handle('cloud:prune-empty-directories', async (_event, id: GameId) => {
@@ -438,8 +602,12 @@ function registerIpc() {
     });
 
     ipcMain.handle('cloud:restore-split-files', async (_event, id: GameId) => {
-        const { status } = await requireRunningGame(id);
+        const { game, status, physicalRoot } = await requireRunningGame(id);
         splitRestoreProgress.delete(id);
+        if (game.storageMode === 'carrier' && !carrierHydratedSessions.has(id)) {
+            await carrierStorage.restoreWorkspace(physicalRoot, status.cloudRoot!);
+            carrierHydratedSessions.add(id);
+        }
         return cloudFs.restoreSplitFiles(
             status.cloudRoot!,
             splitCacheRoot(id),
@@ -470,7 +638,8 @@ function registerIpc() {
             const cloudRoot = game.getCloudRoot({
                 steamLibraries: env.libraries,
                 steamId64: env.steamId64,
-                installedLibrary: install.library
+                installedLibrary: install.library,
+                installedDir: install.installDir
             });
             const safeDirection: steam.CloudTransferDirection = direction === 'up' || direction === 'down' ? direction : 'auto';
             return steam.cloudTransferProgress(
@@ -677,15 +846,12 @@ function requestRendererClose(quitApp: boolean): void {
     mainWindow.webContents.send('app:close-request');
 }
 
-// Fenêtre Electron principale.
 
 function createWindow() {
     rendererClosePending = false;
     rendererCloseApproved = false;
     rendererQuitRequested = false;
 
-    // Démarrer dans une grande fenêtre type Big Picture tout en laissant l'utilisateur
-    // la réduire, l'agrandir ou la maximiser librement.
     const workArea = screen.getPrimaryDisplay().workAreaSize;
     const width = Math.min(workArea.width - 24, Math.max(960, Math.floor(workArea.width * 0.88)));
     const height = Math.min(workArea.height - 24, Math.max(620, Math.floor(workArea.height * 0.86)));
@@ -746,9 +912,6 @@ function createWindow() {
     });
     mainWindow.on('blur', () => {
         if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFullScreen()) return;
-        // Un jeu peut tenter de prendre le focus juste après son lancement.
-        // Réappliquer le niveau top-most sur la fenêtre entière, quelle que soit
-        // la page actuellement affichée par le renderer.
         setTimeout(() => {
             if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFullScreen()) return;
             applyFullscreenPriority(true);
@@ -779,20 +942,31 @@ async function shutdownManagedSession(id: GameId): Promise<void> {
             const cloudRoot = game.getCloudRoot({
                 steamLibraries: env.libraries,
                 steamId64: env.steamId64,
-                installedLibrary: install.library
+                installedLibrary: install.library,
+                installedDir: install.installDir
             });
 
-            // A Cloud session can contain rebuilt >100 MiB files while it is open.
-            // Put the Steam-facing split representation back before stopping the
-            // game so closing VaporStow cannot leave the cloud in an unsafe state.
             if (cloudRoot) {
                 try {
+                    const logicalRoot = logicalCloudRoot(game, cloudRoot)!;
                     await cloudFs.prepareSplitFilesForSync(
-                        cloudRoot,
+                        logicalRoot,
                         game.quotaBytes,
                         game.maxFiles,
                         splitCacheRoot(id)
                     );
+                    if (game.storageMode === 'carrier') {
+                        const rule = game.cloudRules[0];
+                        if (!rule) throw new Error('No compatible Steam Cloud carrier rule is available.');
+                        await carrierStorage.packWorkspace(
+                            logicalRoot,
+                            cloudRoot,
+                            rule.pattern,
+                            rule.recursive,
+                            game.quotaBytes,
+                            game.maxFiles
+                        );
+                    }
                 } catch (error) {
                     console.error(`[VaporStow] Failed to prepare ${game.name} during app shutdown:`, error);
                 }
@@ -807,8 +981,6 @@ async function shutdownManagedSession(id: GameId): Promise<void> {
 }
 
 async function shutdownManagedSessions(): Promise<void> {
-    // Do this sequentially: Steam can serialize app shutdown/cloud work and the
-    // supported game list is intentionally tiny.
     for (const id of [...managedGameSessions]) {
         try {
             await shutdownManagedSession(id);
@@ -821,15 +993,12 @@ async function shutdownManagedSessions(): Promise<void> {
 app.on('before-quit', (event) => {
     if (rendererCloseApproved) return;
 
-    // Avec une session Cloud active, laisser le renderer exécuter le chemin
-    // Synchronize complet (upload Steam + commit de l'index) avant de quitter.
     if (managedGameSessions.size > 0 && mainWindow && !mainWindow.isDestroyed()) {
         event.preventDefault();
         requestRendererClose(true);
         return;
     }
 
-    // Fallback sans renderer (arrêt anormal/dev) : ne jamais laisser un jeu géré orphelin.
     if (quitCleanupFinished || managedGameSessions.size === 0) return;
     event.preventDefault();
     if (quitCleanupStarted) return;
@@ -842,8 +1011,6 @@ app.on('before-quit', (event) => {
     });
 });
 
-// In development, concurrently sends SIGTERM when the dev stack is stopped.
-// Route it through Electron's normal quit path so managed games are not orphaned.
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
         if (app.isReady()) app.quit();

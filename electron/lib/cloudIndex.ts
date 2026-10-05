@@ -34,8 +34,6 @@ export type CloudIndexSearchEntry = CloudIndexSnapshotEntry & {
 let database: DatabaseSync | null = null;
 
 export function databasePath(): string {
-    // En développement, garder la DB à la racine du projet : npm run clean peut
-    // ainsi la supprimer sans toucher au reste des données Electron de l'utilisateur.
     if (!app.isPackaged) return path.join(app.getAppPath(), 'cloud-index.db');
     return path.join(app.getPath('userData'), 'cloud-index.db');
 }
@@ -50,8 +48,6 @@ export function initialize(): void {
         enableForeignKeyConstraints: true
     });
 
-    // DELETE évite les fichiers persistants -wal/-shm : hors transaction, le cache
-    // reste matérialisé par un seul fichier cloud-index.db.
     database.exec(`
         PRAGMA journal_mode = DELETE;
         PRAGMA synchronous = NORMAL;
@@ -116,8 +112,6 @@ export async function snapshotGame(game: GameDefinition, cloudRoot: string): Pro
     const entries: CloudIndexSnapshotEntry[] = [];
 
     if (fs.existsSync(root)) {
-        // Steam Cloud ne persiste pas les dossiers vides. On indexe donc un dossier
-        // uniquement s'il contient au moins un fichier, directement ou plus bas.
         const walk = async (directory: string, isRoot = false): Promise<boolean> => {
             const dirents = await fsp.readdir(directory, { withFileTypes: true });
             let containsFile = false;

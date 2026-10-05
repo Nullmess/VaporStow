@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 contextBridge.exposeInMainWorld('vaporApi', {
     getStatus: () => ipcRenderer.invoke('status:get'),
+    startCatalogBackground: () => ipcRenderer.invoke('catalog:start-background'),
+    searchExternalCatalog: (criteria?: { minQuotaBytes?: number; minFiles?: number; maxAppSizeBytes?: number | null; targetResults?: number }) => ipcRenderer.invoke('catalog:search', criteria),
     openSteamDownload: () => ipcRenderer.invoke('steam:download'),
     openGithubProfile: (username: string) => ipcRenderer.invoke('github:open-profile', username),
     runSteam: () => ipcRenderer.invoke('steam:run'),
@@ -17,6 +19,7 @@ contextBridge.exposeInMainWorld('vaporApi', {
     waitForCloudSync: (id: string, marker: number) => ipcRenderer.invoke('cloud:wait-sync', id, marker),
     prepareSync: (id: string) => ipcRenderer.invoke('cloud:prepare-sync', id),
     getCloudContentSummary: (id: string) => ipcRenderer.invoke('cloud:content-summary', id),
+    getAuditUsage: (id: string) => ipcRenderer.invoke('cloud:audit-usage', id),
     pruneEmptyDirectories: (id: string) => ipcRenderer.invoke('cloud:prune-empty-directories', id),
     restoreSplitFiles: (id: string) => ipcRenderer.invoke('cloud:restore-split-files', id),
     getRestoreProgress: (id: string) => ipcRenderer.invoke('cloud:restore-progress', id),

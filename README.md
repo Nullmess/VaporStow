@@ -9,7 +9,7 @@
 ---
 
 <p align="center">
-    ☁️ Cross-platform Steam Cloud file manager for supported games.
+    ☁️ Cross-platform Steam Auto-Cloud file manager.
 </p>
 
 <p align="center">
@@ -30,29 +30,16 @@
 
 ## ✨ Features
 
-- Browse files in supported Steam Cloud locations
-- Dynamic Cloud home with centered `All`, `Favorites`, `Installed`, and `Not installed` filters
-- Expandable magnifier search for detected Clouds by name, volume, AppID, or Cloud pattern
-- Persistent favorite Clouds across app launches
-- Circular home carousel
-- Manage files and folders through a local desktop interface
-- Automatic handling of large files within supported file-size limits
-- Incremental synchronization to avoid unnecessary data transfers
-- SHA-256 integrity checks
-- Steam Cloud upload and download progress
-- Transfer speed, ETA, and current-file tracking
-- Storage usage and available file-slot tracking
-- Automatic Steam detection, launch, and synchronization across native, Flatpak and Snap installations
-- Open or reveal files in the system file manager
-
-## 🎮 Supported Games
-
-- NekoDice (`1621860`)
-- Asteroid (`2020850`)
-- Hunt For Gods (`576940`)
-- World of Shooting (`1678150`)
-
----
+- Browse and manage compatible Steam Clouds.
+- Generic Steam Auto-Cloud support, including restricted and non-recursive rules.
+- Cloud search, filters, favorites and circular carousel.
+- File and folder management with Advanced Search.
+- Large-file splitting and reconstruction.
+- Incremental synchronization with progress, speed and ETA.
+- Cloud usage, quota and file-slot tracking.
+- Automatic Steam detection, launch and synchronization.
+- App metadata, artwork and outside-library discovery.
+- Windows, Linux and macOS support.
 
 ## 🚀 Usage
 
@@ -62,7 +49,7 @@ VaporStow development uses **Node.js 22.x**.
 
 ```shell
 fnm use 22
-npm install
+npm ci
 npm run dev
 ```
 
@@ -70,12 +57,6 @@ npm run dev
 
 ```shell
 npm run app
-```
-
-### Build
-
-```shell
-npm run build
 ```
 
 ### Platform packages
@@ -106,19 +87,9 @@ npm run build-mac
 
 Output: `release/VaporStow-macos-x64/`
 
-#### All targets
-
-Local platform commands remain available individually:
-
-```shell
-npm run build-win
-npm run build-lin
-npm run build-mac
-```
-
 ### Clean
 
-Remove generated files and installed dependencies:
+Remove dependencies, generated files and caches:
 
 ```shell
 npm run clean
@@ -145,3 +116,4 @@ Give a ⭐️ if VaporStow helped you!
 
 Copyright © 2026 [Nullmess](https://github.com/Nullmess) & [Ybucaille](https://github.com/Ybucaille).<br />
 This project is licensed under the MIT License.
+

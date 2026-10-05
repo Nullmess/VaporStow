@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-05T00:00:00.000Z",
+  "apps": [
+    {
+      "appId": "1621860",
+      "name": "NekoDice",
+      "type": "application",
+      "isFreeApp": true,
+      "storePriceCents": 0,
+      "storePriceLabel": "Free",
+      "installSizeBytes": 609873101,
+      "appInfo": {
+        "common": {
+          "name": "NekoDice",
+          "type": "Application",
+          "releasestate": "released",
+          "isfreeapp": "1"
+        },
+        "config": {
+          "installdir": "NekoDice",
+          "launch": {
+            "0": {
+              "executable": "NekoDice.exe"
+            }
+          }
+        },
+        "ufs": {
+          "quota": "100000000000",
+          "maxnumfiles": "10000",
+          "savefiles": {
+            "0": {
+              "root": "GameInstall",
+              "path": "NekoData/Model",
+              "pattern": "*",
+              "recursive": "1",
+              "platforms": {
+                "0": "Windows"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

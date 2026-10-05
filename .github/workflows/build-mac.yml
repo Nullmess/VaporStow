@@ -1,11 +1,11 @@
-name: Build VaporStow-macos-x64.zip
-run-name: Build VaporStow-macos-x64.zip
+name: Build VaporStow macOS x64
+run-name: Build VaporStow macOS x64
 
 on:
     workflow_dispatch:
         inputs:
             release_tag:
-                description: Optional release tag to upload the ZIP (for example 1.0.0)
+                description: Optional release tag (defaults to package version)
                 required: false
                 type: string
     push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
     build:
-        name: VaporStow-macos-x64.zip
+        name: VaporStow macOS x64
         runs-on: macos-15-intel
 
         steps:
@@ -34,15 +34,24 @@ jobs:
               run: npm ci
 
             - name: Typecheck
-              run: npm run typecheck
-
-            - name: Build app
-              run: npm run build
+              run: |
+                  npx tsc -p renderer/tsconfig.json --noEmit
+                  npx tsc -p electron/tsconfig.json --noEmit
 
             - name: Build DMG
-              run: npx electron-builder --publish never --mac --x64 -c.directories.output=release/VaporStow-macos-x64
+              run: npm run build-mac
 
-            - name: Create ZIP
+            - name: Upload macOS artifact
+              uses: actions/upload-artifact@v7
+              with:
+                  name: VaporStow-macos-x64
+                  path: |
+                      release/VaporStow-macos-x64/*.dmg
+                      release/VaporStow-macos-x64/*.dmg.blockmap
+                      release/VaporStow-macos-x64/latest*.yml
+                  if-no-files-found: error
+
+            - name: Create release ZIP
               shell: bash
               run: |
                   set -euo pipefail
@@ -55,18 +64,22 @@ jobs:
                   fi
                   zip -9 ../VaporStow-macos-x64.zip "${files[@]}"
 
-            - name: Upload VaporStow-macos-x64.zip
-              uses: actions/upload-artifact@v7
-              with:
-                  name: VaporStow-macos-x64.zip
-                  path: release/VaporStow-macos-x64.zip
-                  if-no-files-found: error
+            - name: Resolve release tag
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  if [[ "${{ github.event_name }}" == "push" ]]; then
+                      tag="${{ github.ref_name }}"
+                  elif [[ -n "${{ inputs.release_tag }}" ]]; then
+                      tag="${{ inputs.release_tag }}"
+                  else
+                      tag="$(node -p 'require("./package.json").version')"
+                  fi
+                  echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
 
             - name: Upload ZIP to GitHub Release
-              if: github.event_name == 'push' || inputs.release_tag != ''
               env:
                   GH_TOKEN: ${{ github.token }}
-                  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
               shell: bash
               run: |
                   set -euo pipefail

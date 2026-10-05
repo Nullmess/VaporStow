@@ -70,7 +70,6 @@ async function windowsRegistrySteamPath(): Promise<string | null> {
     }
 }
 
-// Détection de Steam, libraries et installations.
 
 export async function detectSteamRoot(): Promise<string | null> {
     const home = os.homedir();
@@ -143,7 +142,6 @@ export async function launchSteamBackground(steamRoot: string | null): Promise<b
             child.unref();
             return true;
         } catch {
-            // Tester le mode d'installation Steam suivant.
         }
     }
 
@@ -165,7 +163,6 @@ export async function launchAppBackground(steamRoot: string | null, appId: strin
         }
         candidates.push({ executable: '/Applications/Steam.app/Contents/MacOS/steam_osx', args: ['-silent', '-applaunch', appId, ...launchArgs] });
     } else {
-        // Préférer le launcher cohérent avec le Steam root détecté.
         if (steamRoot?.includes(`${path.sep}.var${path.sep}app${path.sep}com.valvesoftware.Steam${path.sep}`)) {
             candidates.push({ executable: 'flatpak', args: ['run', 'com.valvesoftware.Steam', '-silent', '-applaunch', appId, ...launchArgs] });
         }
@@ -194,7 +191,6 @@ export async function launchAppBackground(steamRoot: string | null, appId: strin
             child.unref();
             return true;
         } catch {
-            // Tester le mode d'installation Steam suivant.
         }
     }
 
@@ -217,52 +213,116 @@ export async function detectLibraries(steamRoot: string | null): Promise<string[
         let match: RegExpExecArray | null;
         while ((match = pattern.exec(text))) libraries.push(decodeVdfPath(match[1]));
     } catch {
-        // Garder la library par défaut si libraryfolders.vdf est indisponible.
     }
 
     return uniquePaths(libraries).filter(exists);
+}
+
+const MISSING_INSTALL: InstallInfo = {
+    installed: false,
+    installing: false,
+    library: null,
+    manifest: null,
+    installDir: null,
+    sizeOnDisk: 0
+};
+
+function parseInstallManifest(text: string, library: string, manifest: string): InstallInfo {
+    const installName = text.match(/"installdir"\s+"([^"]+)"/i)?.[1] || null;
+    const size = Number(text.match(/"SizeOnDisk"\s+"(\d+)"/i)?.[1] || 0);
+    const rawStateFlags = text.match(/"StateFlags"\s+"(\d+)"/i)?.[1];
+    const stateFlags = rawStateFlags === undefined ? Number.NaN : Number(rawStateFlags);
+    const validStateFlags = Number.isFinite(stateFlags);
+
+    const fullyInstalled = validStateFlags ? (stateFlags & 4) !== 0 : true;
+    const activeInstallMask = 2 | 256 | 512 | 1024 | 65536 | 131072 | 262144 | 524288 | 1048576 | 2097152 | 4194304 | 8388608;
+    const installing = validStateFlags ? !fullyInstalled && (stateFlags & activeInstallMask) !== 0 : false;
+
+    return {
+        installed: fullyInstalled,
+        installing,
+        library,
+        manifest,
+        installDir: installName ? path.join(library, 'steamapps', 'common', installName) : null,
+        sizeOnDisk: Number.isFinite(size) ? size : 0
+    };
+}
+
+function accountIdFromSteamId64(steamId64: string | null): string | null {
+    if (!steamId64 || !/^\d+$/.test(steamId64)) return null;
+    try {
+        const accountId = BigInt(steamId64) - 76561197960265728n;
+        return accountId >= 0n ? accountId.toString() : null;
+    } catch {
+        return null;
+    }
+}
+
+async function collectLibraryCacheIds(directory: string, target: Set<string>): Promise<void> {
+    let entries: import('node:fs').Dirent[];
+    try {
+        entries = await fsp.readdir(directory, { withFileTypes: true });
+    } catch {
+        return;
+    }
+
+    for (const entry of entries) {
+        const match = /^(\d+)(?:\.json)?$/i.exec(entry.name);
+        if (match) target.add(match[1]);
+    }
+}
+
+export async function scanLibraryAppIds(steamRoot: string | null, steamId64: string | null): Promise<Set<string>> {
+    const owned = new Set<string>();
+    if (!steamRoot) return owned;
+
+    const accountId = accountIdFromSteamId64(steamId64);
+    if (accountId) {
+        await collectLibraryCacheIds(path.join(steamRoot, 'userdata', accountId, 'config', 'librarycache'), owned);
+    }
+
+    return owned;
+}
+
+export async function scanInstalledApps(libraries: string[]): Promise<Map<string, InstallInfo>> {
+    const installs = new Map<string, InstallInfo>();
+
+    await Promise.all(libraries.map(async (library) => {
+        const steamapps = path.join(library, 'steamapps');
+        let names: string[];
+        try {
+            names = await fsp.readdir(steamapps);
+        } catch {
+            return;
+        }
+
+        const manifests = names
+            .map((name) => ({ name, match: /^appmanifest_(\d+)\.acf$/i.exec(name) }))
+            .filter((entry): entry is { name: string; match: RegExpExecArray } => Boolean(entry.match));
+
+        await Promise.all(manifests.map(async ({ name, match }) => {
+            const manifest = path.join(steamapps, name);
+            try {
+                const contents = await fsp.readFile(manifest, 'utf8');
+                installs.set(match[1], parseInstallManifest(contents, library, manifest));
+            } catch {
+            }
+        }));
+    }));
+
+    return installs;
 }
 
 export async function findInstalledApp(libraries: string[], appId: string): Promise<InstallInfo> {
     for (const library of libraries) {
         const manifest = path.join(library, 'steamapps', `appmanifest_${appId}.acf`);
         if (!exists(manifest)) continue;
-
         try {
-            const text = await fsp.readFile(manifest, 'utf8');
-            const installName = text.match(/"installdir"\s+"([^"]+)"/i)?.[1] || null;
-            const size = Number(text.match(/"SizeOnDisk"\s+"(\d+)"/i)?.[1] || 0);
-            const rawStateFlags = text.match(/"StateFlags"\s+"(\d+)"/i)?.[1];
-            const stateFlags = rawStateFlags === undefined ? Number.NaN : Number(rawStateFlags);
-            const validStateFlags = Number.isFinite(stateFlags);
-
-            // Steam creates appmanifest_<appid>.acf as soon as an install starts.
-            // StateFlags=4 is the FullyInstalled bit; do not expose Open before that bit appears.
-            const fullyInstalled = validStateFlags ? (stateFlags & 4) !== 0 : true;
-            const activeInstallMask = 2 | 256 | 512 | 1024 | 65536 | 131072 | 262144 | 524288 | 1048576 | 2097152 | 4194304 | 8388608;
-            const installing = validStateFlags ? !fullyInstalled && (stateFlags & activeInstallMask) !== 0 : false;
-
-            return {
-                installed: fullyInstalled,
-                installing,
-                library,
-                manifest,
-                installDir: installName ? path.join(library, 'steamapps', 'common', installName) : null,
-                sizeOnDisk: Number.isFinite(size) ? size : 0
-            };
+            return parseInstallManifest(await fsp.readFile(manifest, 'utf8'), library, manifest);
         } catch {
-            // Tester une autre Steam library si le manifest est illisible.
         }
     }
-
-    return {
-        installed: false,
-        installing: false,
-        library: null,
-        manifest: null,
-        installDir: null,
-        sizeOnDisk: 0
-    };
+    return { ...MISSING_INSTALL };
 }
 
 export async function detectSteamId64(steamRoot: string | null): Promise<string | null> {
@@ -294,7 +354,6 @@ export async function detectSteamId64(steamRoot: string | null): Promise<string 
     }
 }
 
-// Détection des process et gestion des fenêtres.
 
 async function processList(): Promise<ProcessInfo[]> {
     if (process.platform === 'win32') {
@@ -351,7 +410,6 @@ export async function isSteamRunning(): Promise<boolean> {
             return command.includes('/steam_osx') || command.includes('steam.app/contents/macos/steam');
         }
 
-        // Détecter Steam indépendamment du process du jeu.
         return /(^|[\s/])(steam|steam\.sh|steamwebhelper)(?=\s|$)/.test(command)
             || command.includes('com.valvesoftware.steam');
     });
@@ -364,10 +422,6 @@ function processMatches(game: GameDefinition, install: InstallInfo, processInfo:
 
     if (hints.some((hint) => hint && command.includes(hint.toLowerCase()))) return true;
 
-    // Proton/Steam Linux launch wrappers do not always contain the game name,
-    // but they normally carry the app id in their command line. Matching those
-    // wrappers makes window hiding and shutdown reliable before the final game
-    // executable appears. Never classify Steam's own UI processes as the game.
     const steamInfrastructure = /(^|[\s/])(steam|steam\.sh|steamwebhelper)(?=\s|$)/.test(command)
         || command.includes('com.valvesoftware.steam');
     if (steamInfrastructure) return false;
@@ -387,7 +441,6 @@ async function matchingProcesses(game: GameDefinition, install: InstallInfo): Pr
         processes.filter((processInfo) => processMatches(game, install, processInfo)).map((item) => item.pid)
     );
 
-    // Inclure les process enfants qui possèdent réellement la fenêtre du jeu.
     let changed = true;
     while (changed) {
         changed = false;
@@ -404,6 +457,35 @@ async function matchingProcesses(game: GameDefinition, install: InstallInfo): Pr
 
 export async function isAppRunning(game: GameDefinition, install: InstallInfo): Promise<boolean> {
     return (await matchingProcesses(game, install)).length > 0;
+}
+
+export async function detectRunningGameIds(
+    entries: Array<{ game: GameDefinition; install: InstallInfo }>
+): Promise<Set<string>> {
+    if (entries.length === 0) return new Set();
+    const processes = await processList();
+    const running = new Set<string>();
+
+    for (const { game, install } of entries) {
+        const matched = new Set(
+            processes.filter((processInfo) => processMatches(game, install, processInfo)).map((item) => item.pid)
+        );
+        if (matched.size === 0) continue;
+
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const processInfo of processes) {
+                if (!matched.has(processInfo.pid) && matched.has(processInfo.ppid)) {
+                    matched.add(processInfo.pid);
+                    changed = true;
+                }
+            }
+        }
+        if (matched.size > 0) running.add(game.id);
+    }
+
+    return running;
 }
 
 async function commandAvailable(command: string): Promise<boolean> {
@@ -423,7 +505,6 @@ async function commandAvailable(command: string): Promise<boolean> {
             await fsp.access(path.join(directory, command), fs.constants.X_OK);
             return true;
         } catch {
-            // Continue searching the PATH.
         }
     }
     return false;
@@ -477,7 +558,6 @@ async function setHyprNamedRuleProperty(name: string, property: string, value: s
     }
 }
 
-// Préparer une rule Hyprland avant la fenêtre pour éviter son flash initial.
 export async function prepareBackgroundApp(
     game: GameDefinition,
     install: InstallInfo
@@ -573,7 +653,6 @@ async function backgroundOnHyprland(game: GameDefinition, install: InstallInfo, 
                 ]);
                 affected += 1;
             } catch {
-                // Ignorer une fenêtre disparue entre la détection et l'action.
             }
         }
 
@@ -621,7 +700,6 @@ async function backgroundOnSway(game: GameDefinition, install: InstallInfo, pids
                 await execFileAsync('swaymsg', [`[con_id=${node.id}]`, 'move', 'scratchpad']);
                 affected += 1;
             } catch {
-                // Continuer avec les autres fenêtres du jeu.
             }
         }
         return affected;
@@ -659,9 +737,6 @@ async function backgroundOnNiri(game: GameDefinition, install: InstallInfo, pids
             if (!pidMatch && !metadataMatch) continue;
 
             try {
-                // Niri has no built-in scratchpad. A high, non-focused dynamic
-                // workspace gives us the same background-session behaviour while
-                // keeping the user's current workspace and focus untouched.
                 await execFileAsync('niri', [
                     'msg', 'action', 'move-window-to-workspace',
                     '--window-id', String(window.id),
@@ -670,7 +745,6 @@ async function backgroundOnNiri(game: GameDefinition, install: InstallInfo, pids
                 ], { maxBuffer: 1024 * 1024 });
                 affected += 1;
             } catch {
-                // The window may have disappeared between enumeration and move.
             }
         }
 
@@ -681,7 +755,6 @@ async function backgroundOnNiri(game: GameDefinition, install: InstallInfo, pids
 }
 
 async function backgroundOnKdeWayland(pids: number[]): Promise<number> {
-    // Utiliser kdotool sur KWin/Wayland lorsqu'il est déjà disponible.
     if (!(await commandAvailable('kdotool'))) return 0;
     let affected = 0;
     for (const pid of pids) {
@@ -693,11 +766,9 @@ async function backgroundOnKdeWayland(pids: number[]): Promise<number> {
                     await execFileAsync('kdotool', ['windowminimize', windowId]);
                     affected += 1;
                 } catch {
-                    // Ignorer cette fenêtre KWin.
                 }
             }
         } catch {
-            // Aucun window trouvé pour ce pid.
         }
     }
     return affected;
@@ -718,11 +789,9 @@ async function backgroundOnX11(pids: number[]): Promise<number> {
                         await execFileAsync('xdotool', ['windowminimize', windowId]);
                         affected += 1;
                     } catch {
-                        // Ignorer cette fenêtre.
                     }
                 }
             } catch {
-                // Un process peut ne posséder aucune fenêtre X11/XWayland visible.
             }
         }
         if (affected > 0) return affected;
@@ -738,11 +807,9 @@ async function backgroundOnX11(pids: number[]): Promise<number> {
                     await execFileAsync('wmctrl', ['-ir', match[1], '-b', 'add,hidden']);
                     affected += 1;
                 } catch {
-                    // Ignorer cette fenêtre.
                 }
             }
         } catch {
-            // Aucune liste de fenêtres X11 disponible.
         }
     }
 
@@ -809,7 +876,6 @@ async function backgroundOnMac(pids: number[]): Promise<number> {
             ]);
             affected += Number.parseInt(stdout.trim(), 10) || 0;
         } catch {
-            // macOS peut demander la permission Automation/Accessibility.
         }
     }
     return affected;
@@ -822,7 +888,6 @@ export async function backgroundApp(
     const matches = await matchingProcesses(game, install);
     const pids = [...new Set(matches.map((item) => item.pid).filter(Boolean))];
 
-    // Matcher les metadata du compositor pour couvrir wrappers et renderers.
     if (process.platform === 'linux') {
         const niri = await backgroundOnNiri(game, install, pids);
         if (niri !== null) return { mode: 'niri-background-workspace', affected: niri };
@@ -879,7 +944,6 @@ export async function stopAppGracefully(
             }
             pids.push(processInfo.pid);
         } catch {
-            // Continuer avec les autres process du jeu.
         }
     }
 
@@ -896,7 +960,6 @@ export async function stopAppGracefully(
             }
             if (!pids.includes(processInfo.pid)) pids.push(processInfo.pid);
         } catch {
-            // Laisser Steam signaler l'échec si un process survit.
         }
     }
 
@@ -921,7 +984,6 @@ export type CloudTransferProgress = {
     logPath: string | null;
 };
 
-// Lecture et suivi du Steam Cloud log.
 
 export async function detectCloudLogPath(steamRoot: string | null): Promise<string | null> {
     const home = os.homedir();
@@ -949,7 +1011,6 @@ export async function detectCloudLogPath(steamRoot: string | null): Promise<stri
         if (exists(candidate)) return candidate;
     }
 
-    // Retourner le Cloud log attendu même avant sa première création par Steam.
     return normalized[0] || null;
 }
 
@@ -967,7 +1028,6 @@ export async function clearCloudLog(steamRoot: string | null): Promise<{ cleared
     const log = await detectCloudLogPath(steamRoot);
     if (!log) return { cleared: false, logPath: null, marker: 0 };
 
-    // Réessayer le truncate si Steam rouvre temporairement cloud_log.txt.
     for (let attempt = 0; attempt < 6; attempt += 1) {
         try {
             await fsp.mkdir(path.dirname(log), { recursive: true });
@@ -985,7 +1045,6 @@ export async function clearCloudLog(steamRoot: string | null): Promise<{ cleared
         }
     }
 
-    // Conserver le marker courant si le log reste temporairement verrouillé.
     return { cleared: false, logPath: log, marker: await cloudLogMarker(steamRoot) };
 }
 
@@ -998,7 +1057,6 @@ async function readCloudLogFrom(steamRoot: string | null, marker: number): Promi
         try {
             const stat = await handle.stat();
             if (stat.size === marker) return { text: '', logPath: log };
-            // Relire depuis le début si Steam a tronqué ou recréé le log.
             const start = stat.size < marker ? 0 : marker;
             const length = stat.size - start;
             if (length <= 0) return { text: '', logPath: log };
@@ -1053,10 +1111,8 @@ async function statLoggedCloudPath(cloudRoot: string | null, loggedPath: string)
 
     if (path.isAbsolute(normalizedLogged)) candidates.push(normalizedLogged);
 
-    // Résoudre les paths Auto-Cloud relativement au profile utilisateur.
     candidates.push(path.join(os.homedir(), normalizedLogged));
 
-    // Tester les suffixes du Cloud root pour rester portable entre plateformes.
     const rootSlash = path.resolve(cloudRoot).replace(/\\/g, '/');
     const rootParts = rootSlash.split('/').filter(Boolean);
     const lowerLogged = slashLogged.toLowerCase();
@@ -1069,7 +1125,6 @@ async function statLoggedCloudPath(cloudRoot: string | null, loggedPath: string)
         break;
     }
 
-    // Garder des suffixes de secours pour les noms uniques de VaporStow.parts.
     const pieces = slashLogged.split('/').filter(Boolean);
     if (pieces.length >= 2) candidates.push(path.join(cloudRoot, pieces.slice(-2).join(path.sep)));
     if (pieces.length >= 1) candidates.push(path.join(cloudRoot, pieces.at(-1)!));
@@ -1079,7 +1134,6 @@ async function statLoggedCloudPath(cloudRoot: string | null, loggedPath: string)
             const stat = await fsp.stat(candidate);
             if (stat.isFile()) return stat.size;
         } catch {
-            // Tester le candidat suivant.
         }
     }
 
@@ -1132,7 +1186,6 @@ async function cachedLoggedCloudPathSize(
     if (cached !== undefined) return cached;
 
     const size = await statLoggedCloudPath(cloudRoot, loggedPath);
-    // Ne pas cacher les misses pendant un pull encore incomplet.
     if (size !== null) session.set(key, size);
     return size;
 }
@@ -1183,7 +1236,6 @@ export async function cloudTransferProgress(
             ? /download complete, result ok|download complete in build list|successfully synced to changenumber|autocloud complete/i.test(text)
             : /successfully synced to changenumber|autocloud complete/i.test(text);
 
-    // Garder le progress indéterminé tant que Steam peut ajouter des fichiers.
     const batchReady = complete || (direction === 'up'
         ? /upload batch initiated|HTTP upload for file .* beginning/i.test(text)
         : direction === 'down'
@@ -1256,7 +1308,6 @@ export async function cloudTransferProgress(
             totalBytes = [...neededSizes.values()].reduce((sum, value) => sum + value, 0);
         }
 
-        // Interpoler l'upload courant avec le throughput mesuré entre deux logs Steam.
         let newest: { file: string; startedAt: number | null } | null = null;
         for (const active of activeBegins.values()) {
             if (!newest || (active.startedAt ?? 0) >= (newest.startedAt ?? 0)) newest = active;
@@ -1278,7 +1329,6 @@ export async function cloudTransferProgress(
             etaSeconds = Math.max(0, (totalBytes - transferredBytes) / speedBytesPerSecond);
         }
     } else if (direction === 'down') {
-        // Utiliser les bytes seulement si chaque fichier téléchargé peut être résolu.
         let resolvedTotal = 0;
         let resolvedNeeded = 0;
         let resolvedDone = 0;
@@ -1304,7 +1354,6 @@ export async function cloudTransferProgress(
     const totalFiles = neededFiles.length > 0 && batchReady ? neededFiles.length : null;
     const completedFiles = completedPaths.length;
 
-    // Estimer par durée de fichier lorsque le total en bytes reste inconnu.
     if (etaSeconds === null && batchReady && totalFiles !== null && completedTransferDurations.length > 0) {
         const averageSeconds = completedTransferDurations.reduce((sum, value) => sum + value, 0) / completedTransferDurations.length;
         etaSeconds = Math.max(0, (totalFiles - completedFiles) * averageSeconds);
@@ -1327,7 +1376,6 @@ export async function cloudTransferProgress(
                 ? 'downloading'
                 : 'evaluating';
 
-    // Garder les messages du parser génériques pour éviter les doublons dans l'UI.
     const message = state === 'complete'
         ? 'Steam Cloud synchronized.'
         : state === 'uploading'
@@ -1345,7 +1393,6 @@ export async function cloudTransferProgress(
     };
 }
 
-// Attendre l'activité Cloud de l'AppID et accepter le cas valide sans changement.
 export async function waitForCloudSync(
     steamRoot: string | null,
     appId: string,

@@ -1,11 +1,73 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type CSSProperties } from 'react';
 import type { AppStatus, AuditEntry, CloudSearchEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
-import startupLogo from './assets/logo.png';
 
 type GameId = GameStatus['id'];
 type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
 type NavDirection = 'forward' | 'back' | 'same';
-type HomeCloudFilter = 'all' | 'favorites' | 'installed' | 'not-installed';
+type HomeCloudFilter = 'all' | 'favorites' | 'installed' | 'not-installed' | 'advanced';
+
+type AdvancedCloudFilters = {
+    includeLocal: boolean;
+    includeCatalog: boolean;
+    includeInstalled: boolean;
+    includeNotInstalled: boolean;
+    minQuotaGiB: number;
+    minFiles: number;
+    maxAppSizeMiB: number;
+    maxPriceUnits: number;
+};
+
+const MAX_CLOUD_QUOTA_GIB = 100_000_000_000 / (1024 ** 3);
+const MAX_CLOUD_FILES_FILTER = 10_000;
+const MAX_APP_SIZE_FILTER_MIB = 256 * 1024;
+const MAX_GAME_PRICE_FILTER_UNITS = 101; // 101 = tous, 0 = gratuit.
+
+function defaultAdvancedCloudFilters(): AdvancedCloudFilters {
+    return {
+        includeLocal: true,
+        includeCatalog: true,
+        includeInstalled: true,
+        includeNotInstalled: true,
+        minQuotaGiB: 0,
+        minFiles: 0,
+        maxAppSizeMiB: 0,
+        maxPriceUnits: MAX_GAME_PRICE_FILTER_UNITS
+    };
+}
+
+type AdvancedSourceMode = 'any' | 'local' | 'catalog';
+type AdvancedInstallMode = 'any' | 'installed' | 'not-installed';
+
+function advancedSourceMode(filters: AdvancedCloudFilters): AdvancedSourceMode {
+    if (filters.includeLocal && !filters.includeCatalog) return 'local';
+    if (!filters.includeLocal && filters.includeCatalog) return 'catalog';
+    return 'any';
+}
+
+function withAdvancedSourceMode(filters: AdvancedCloudFilters, mode: AdvancedSourceMode): AdvancedCloudFilters {
+    const leavingOutside = advancedSourceMode(filters) === 'catalog' && mode !== 'catalog';
+    return {
+        ...filters,
+        includeLocal: mode !== 'catalog',
+        includeCatalog: mode !== 'local',
+        includeInstalled: mode === 'catalog' ? false : leavingOutside ? true : filters.includeInstalled,
+        includeNotInstalled: mode === 'catalog' ? true : leavingOutside ? true : filters.includeNotInstalled
+    };
+}
+
+function advancedInstallMode(filters: AdvancedCloudFilters): AdvancedInstallMode {
+    if (filters.includeInstalled && !filters.includeNotInstalled) return 'installed';
+    if (!filters.includeInstalled && filters.includeNotInstalled) return 'not-installed';
+    return 'any';
+}
+
+function withAdvancedInstallMode(filters: AdvancedCloudFilters, mode: AdvancedInstallMode): AdvancedCloudFilters {
+    return {
+        ...filters,
+        includeInstalled: mode !== 'not-installed',
+        includeNotInstalled: mode !== 'installed'
+    };
+}
 
 type ModalState =
     | null
@@ -16,6 +78,7 @@ type ModalState =
     | { kind: 'delete'; game: GameStatus; entry: AuditEntry }
     | { kind: 'empty-folders-sync'; game: GameStatus }
     | { kind: 'info' }
+    | { kind: 'advanced-search' }
     | { kind: 'message'; title: string; body: string };
 
 type ExplorerSelection = AuditEntry | {
@@ -27,12 +90,20 @@ type ExplorerSelection = AuditEntry | {
     parentTarget: string;
 };
 
+const MIB = 1024 ** 2;
 const GIB = 1024 ** 3;
 const AFK_TIMEOUT_MS = 10 * 60 * 1000;
 const FAVORITE_CLOUDS_STORAGE_KEY = 'vaporstow.favorite-clouds.v1';
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function withUiTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => window.setTimeout(() => reject(new Error('Search timed out.')), timeoutMs))
+    ]);
 }
 
 function normalizeRelative(value: string): string {
@@ -90,6 +161,8 @@ function compactStatusLine(value: string, maxLength = 34): string {
 }
 
 function quotaLabel(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    if (bytes < GIB) return formatBytes(bytes);
     return `${(bytes / GIB).toFixed(2)} GiB`;
 }
 
@@ -112,8 +185,6 @@ function usageLabel(game: GameStatus, open: boolean): string {
     const current = open ? game.auditBytes : game.rememberedBytes;
     const remaining = remainingFileSlots(game, open);
 
-    // Before the first Cloud session there is no remembered usage yet.
-    // Show the conservative limits instead of question marks.
     if (!open && current === null && remaining === null) {
         return `≤ ${quotaLabel(game.quotaBytes)} · ≤ ${game.maxFiles.toLocaleString()} files`;
     }
@@ -121,6 +192,88 @@ function usageLabel(game: GameStatus, open: boolean): string {
     const bytes = current === null ? 'Unknown' : `${formatBytes(current)} / ${quotaLabel(game.quotaBytes)}`;
     const files = remaining === null ? 'Unknown files left' : `${remaining.toLocaleString()} files left`;
     return `${bytes} · ${files}`;
+}
+
+function appInstallSizeSummary(game: GameStatus): string {
+    if (game.installSize <= 0) return 'App size · Unknown';
+    const prefix = game.installed ? '' : '~';
+    return `App size · ${prefix}${formatBytes(game.installSize)}`;
+}
+
+const APP_SIZE_FILTER_STEPS_MIB = [
+    1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
+    1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, MAX_APP_SIZE_FILTER_MIB
+] as const;
+
+function appSizeFilterLabel(maxMiB: number): string {
+    if (maxMiB <= 0) return 'Any';
+    if (maxMiB < 1024) return `≤ ${maxMiB.toLocaleString()} MiB`;
+    const gib = maxMiB / 1024;
+    return `≤ ${Number.isInteger(gib) ? gib.toFixed(0) : gib.toFixed(1)} GiB`;
+}
+
+function appSizeSliderIndex(maxMiB: number): number {
+    if (maxMiB <= 0) return APP_SIZE_FILTER_STEPS_MIB.length;
+    const exact = APP_SIZE_FILTER_STEPS_MIB.indexOf(maxMiB as typeof APP_SIZE_FILTER_STEPS_MIB[number]);
+    if (exact >= 0) return exact;
+    let best = 0;
+    for (let index = 0; index < APP_SIZE_FILTER_STEPS_MIB.length; index += 1) {
+        if (APP_SIZE_FILTER_STEPS_MIB[index] <= maxMiB) best = index;
+    }
+    return best;
+}
+
+
+function compactGameName(name: string, maxChars = 25): string {
+    const clean = name.trim();
+    if (clean.length <= maxChars) return clean;
+    return `${clean.slice(0, maxChars).trimEnd()}…`;
+}
+
+function matchesAdvancedFilters(game: GameStatus, filters: AdvancedCloudFilters): boolean {
+    const sourceMode = advancedSourceMode(filters);
+    if (sourceMode === 'catalog' && (game.inLibrary || game.installed)) return false;
+    if (sourceMode === 'local' && !game.inLibrary && !game.installed) return false;
+    if (sourceMode === 'any') {
+        const sourceAllowed = game.inLibrary || game.installed ? filters.includeLocal : filters.includeCatalog;
+        if (!sourceAllowed) return false;
+    }
+    if (game.installed ? !filters.includeInstalled : !filters.includeNotInstalled) return false;
+
+    const quotaGiB = game.quotaBytes / GIB;
+    if (quotaGiB + 1e-6 < filters.minQuotaGiB) return false;
+    if (game.maxFiles < filters.minFiles) return false;
+
+    const appSizeUnlimited = filters.maxAppSizeMiB <= 0;
+    if (game.installSize > 0) {
+        const appSizeMiB = game.installSize / MIB;
+        if (!appSizeUnlimited && appSizeMiB > filters.maxAppSizeMiB) return false;
+    }
+
+    const priceUnlimited = filters.maxPriceUnits >= MAX_GAME_PRICE_FILTER_UNITS;
+    if (!game.inLibrary && !priceUnlimited) {
+        if (game.storePriceCents === null) return false;
+        if (game.storePriceCents > filters.maxPriceUnits * 100) return false;
+    }
+    return true;
+}
+
+function advancedFilterCount(filters: AdvancedCloudFilters): number {
+    let count = 0;
+    if (!filters.includeLocal || !filters.includeCatalog) count += 1;
+    if (!filters.includeInstalled || !filters.includeNotInstalled) count += 1;
+    if (filters.minQuotaGiB > 0) count += 1;
+    if (filters.minFiles > 0) count += 1;
+    if (filters.maxAppSizeMiB > 0) count += 1;
+    if (filters.maxPriceUnits < MAX_GAME_PRICE_FILTER_UNITS) count += 1;
+    return count;
+}
+
+function compareHomeGames(left: GameStatus, right: GameStatus): number {
+    return Number(right.installed) - Number(left.installed)
+        || right.quotaBytes - left.quotaBytes
+        || right.maxFiles - left.maxFiles
+        || left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
 }
 
 function statusTone(game: GameStatus): 'missing' | 'installing' | 'idle' | 'running' {
@@ -162,11 +315,9 @@ async function restoreSplitFilesSafe(id: GameId): Promise<void> {
     try {
         await window.vaporApi.restoreSplitFiles(id);
     } catch {
-        // Un restore de recovery est best-effort et idempotent.
     }
 }
 
-// Composants UI locaux.
 
 function SearchIcon({ size = 12 }: { size?: number }) {
     return (
@@ -182,6 +333,17 @@ function SearchIcon({ size = 12 }: { size?: number }) {
         >
             <circle cx="11" cy="11" r="6" />
             <path d="M16 16l4 4" />
+        </svg>
+    );
+}
+
+function SlidersIcon({ size = 14 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h8M16 18h4" />
+            <circle cx="16" cy="6" r="2" />
+            <circle cx="9" cy="12" r="2" />
+            <circle cx="14" cy="18" r="2" />
         </svg>
     );
 }
@@ -562,7 +724,6 @@ function Explorer({
     }
 
     const breadcrumb = directory ? `CloudAudit / ${directory}` : 'CloudAudit';
-    const artwork = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}/library_600x900.jpg`;
     const [searchOpen, setSearchOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const searchRef = useRef<HTMLInputElement | null>(null);
@@ -593,25 +754,25 @@ function Explorer({
 
     return (
         <section className="cloud-view">
-            <div className="cloud-ambient-art" aria-hidden="true"><img src={artwork} alt="" draggable={false} /></div>
+            <div className="cloud-ambient-art" aria-hidden="true"><SteamArtworkImage game={game} /></div>
 
             <div className="cloud-topbar">
                 <div className="cloud-topbar-main">
                     <button
                         className="icon-button cloud-back-button"
-                        aria-label={directory ? 'Parent folder' : 'Back to games'}
-                        title={directory ? 'Parent folder' : (hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to games')}
+                        aria-label={directory ? 'Parent folder' : 'Back to Clouds'}
+                        title={directory ? 'Parent folder' : (hasUnsynchronizedChanges ? 'Synchronize your changes before going back' : 'Back to Clouds')}
                         onClick={() => void goBack()}
                     >
                         <BackIcon />
                     </button>
                     <div className="cloud-game-art" aria-hidden="true">
-                        <img src={artwork} alt="" draggable={false} />
+                        <SteamArtworkImage game={game} />
                     </div>
                     <div className="cloud-title">
                         <div className="cloud-title-line">
                             <span className="status-dot running" />
-                            <strong>{game.name}</strong>
+                            <strong title={game.name}>{game.name}</strong>
                         </div>
                         <small title={cloudMeta}>{cloudMeta}</small>
                     </div>
@@ -769,7 +930,13 @@ function Modal({
     reloadDirectory,
     confirmOpen,
     confirmEmptyFoldersSync,
-    onMutation
+    onMutation,
+    advancedFilters,
+    setAdvancedFilters,
+    activateAdvancedFilter,
+    resetAdvancedSearch,
+    setAdvancedSearchRunning,
+    applyStatus
 }: {
     modal: ModalState;
     close: () => void;
@@ -778,14 +945,27 @@ function Modal({
     confirmOpen: (game: GameStatus, target?: CloudSearchEntry) => Promise<void>;
     confirmEmptyFoldersSync: (game: GameStatus) => Promise<boolean>;
     onMutation: () => void;
+    advancedFilters: AdvancedCloudFilters;
+    setAdvancedFilters: (filters: AdvancedCloudFilters) => void;
+    activateAdvancedFilter: () => void;
+    resetAdvancedSearch: () => void;
+    setAdvancedSearchRunning: (running: boolean) => void;
+    applyStatus: (status: AppStatus) => void;
 }) {
     const [value, setValue] = useState('');
     const [visibleModal, setVisibleModal] = useState<ModalState>(modal);
     const [closing, setClosing] = useState(false);
     const [working, setWorking] = useState(false);
+    const [advancedDraft, setAdvancedDraft] = useState<AdvancedCloudFilters>(() => ({ ...advancedFilters }));
+    const [advancedSearching, setAdvancedSearching] = useState(false);
+    const [advancedSearchMessage, setAdvancedSearchMessage] = useState<string | null>(null);
 
     useEffect(() => {
         if (modal) {
+            if (modal.kind === 'advanced-search') {
+                setAdvancedDraft({ ...advancedFilters });
+                setAdvancedSearchMessage(null);
+            }
             setVisibleModal(modal);
             setClosing(false);
             setWorking(false);
@@ -795,10 +975,11 @@ function Modal({
 
         if (visibleModal) {
             setClosing(true);
+            const closeDelay = visibleModal.kind === 'advanced-search' ? 240 : 150;
             const timer = window.setTimeout(() => {
                 setVisibleModal(null);
                 setClosing(false);
-            }, 150);
+            }, closeDelay);
             return () => window.clearTimeout(timer);
         }
     }, [modal, visibleModal]);
@@ -833,7 +1014,63 @@ function Modal({
     }
 
     const requestClose = () => {
-        if (!working) close();
+        if (working || advancedSearching) return;
+        setAdvancedSearchRunning(false);
+        close();
+    };
+    const updateAdvancedDraft = (update: (current: AdvancedCloudFilters) => AdvancedCloudFilters) => {
+        setAdvancedDraft((current) => update(current));
+        setAdvancedSearchMessage(null);
+    };
+
+    const runAdvancedSearch = async () => {
+        if (advancedSearching) return;
+        const criteria = advancedSourceMode(advancedDraft) === 'catalog'
+            ? {
+                ...advancedDraft,
+                includeInstalled: false,
+                includeNotInstalled: true,
+                maxPriceUnits: 0
+            }
+            : { ...advancedDraft };
+
+        setAdvancedSearchRunning(true);
+        setAdvancedSearching(true);
+        setAdvancedSearchMessage(null);
+        const loadingStartedAt = Date.now();
+        try {
+            const shouldSearchCatalog = criteria.includeCatalog && criteria.includeNotInstalled;
+            if (shouldSearchCatalog) {
+                const appSizeUnlimited = criteria.maxAppSizeMiB <= 0;
+                const nextStatus = await withUiTimeout(window.vaporApi.searchExternalCatalog({
+                    minQuotaBytes: Math.max(0, Math.round(criteria.minQuotaGiB * GIB)),
+                    minFiles: Math.max(0, Math.floor(criteria.minFiles)),
+                    maxAppSizeBytes: appSizeUnlimited ? null : Math.max(1, Math.round(criteria.maxAppSizeMiB * MIB)),
+                    targetResults: 36
+                }), 46_000);
+
+                const previewGames = nextStatus.games
+                    .filter((game) => game.quotaBytes > 0 && game.maxFiles > 0 && matchesAdvancedFilters(game, criteria))
+                    .sort(compareHomeGames)
+                    .slice(0, 5);
+                await Promise.allSettled(previewGames.map((game) => preloadGameArtwork(game)));
+                applyStatus(nextStatus);
+            }
+
+            const remainingLoadingMs = 520 - (Date.now() - loadingStartedAt);
+            if (remainingLoadingMs > 0) await sleep(remainingLoadingMs);
+
+            setAdvancedFilters(criteria);
+            activateAdvancedFilter();
+            close();
+        } catch {
+            setAdvancedFilters(criteria);
+            activateAdvancedFilter();
+            setAdvancedSearchMessage('Search unavailable. Try again.');
+        } finally {
+            setAdvancedSearching(false);
+            setAdvancedSearchRunning(false);
+        }
     };
     const active = visibleModal;
     let content: ReactNode;
@@ -858,7 +1095,7 @@ function Modal({
                 )}
                 <div className="space-calculation" aria-label="Required local space calculation">
                     <div className="space-calculation-row">
-                        <span>Game size</span>
+                        <span>App size</span>
                         <strong><b>+</b>{requiredSpaceLabel(gameSize)}</strong>
                     </div>
                     <div className="space-calculation-row">
@@ -889,7 +1126,7 @@ function Modal({
         const required = rememberedCloud;
         const available = game.disk?.free ?? null;
         const cloudFolderExists = game.cloudRootExists;
-        const enough = cloudFolderExists || game.running || (available !== null && available >= required);
+        const enough = cloudFolderExists || game.running || available === null || available >= required;
 
         content = (
             <>
@@ -910,7 +1147,7 @@ function Modal({
                 </p>
                 {!cloudFolderExists && !enough && (
                     <div className="space-warning">
-                        {available === null ? 'Local free space could not be verified.' : 'Not enough free local space.'}
+                        Not enough free local space.
                     </div>
                 )}
                 <div className="modal-actions">
@@ -995,12 +1232,137 @@ function Modal({
                 </div>
             </>
         );
+    } else if (active.kind === 'advanced-search') {
+        const appSizeIndex = appSizeSliderIndex(advancedDraft.maxAppSizeMiB);
+        const sourceMode = advancedSourceMode(advancedDraft);
+        const externalOnly = sourceMode === 'catalog';
+        const installMode: AdvancedInstallMode = externalOnly ? 'not-installed' : advancedInstallMode(advancedDraft);
+        content = (
+            <div className="advanced-search-panel-content">
+                <div className="advanced-search-heading">
+                    <div>
+                        <h3>Advanced search</h3>
+                    </div>
+                    <div className="advanced-search-heading-actions">
+                        <button type="button" className="advanced-drawer-close" aria-label="Close advanced search" title="Close" onClick={requestClose}>×</button>
+                    </div>
+                </div>
+
+                <section className="advanced-filter-section advanced-choice-section">
+                    <div className="advanced-filter-section-title"><strong>Source</strong></div>
+                    <div className="advanced-segmented" role="radiogroup" aria-label="Cloud source">
+                        {([
+                            ['any', 'Any'],
+                            ['local', 'Library'],
+                            ['catalog', 'Outside']
+                        ] as Array<[AdvancedSourceMode, string]>).map(([mode, label]) => (
+                            <button
+                                key={mode}
+                                type="button"
+                                role="radio"
+                                aria-checked={sourceMode === mode}
+                                className={sourceMode === mode ? 'active' : ''}
+                                onClick={() => updateAdvancedDraft((current) => withAdvancedSourceMode(current, mode))}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                </section>
+
+                <section className="advanced-filter-section advanced-choice-section">
+                    <div className="advanced-filter-section-title"><strong>Install state</strong></div>
+                    <div className="advanced-segmented" role="radiogroup" aria-label="Install state">
+                        {([
+                            ['any', 'Any'],
+                            ['installed', 'Installed'],
+                            ['not-installed', 'Not installed']
+                        ] as Array<[AdvancedInstallMode, string]>).map(([mode, label]) => {
+                            const disabled = externalOnly && mode !== 'not-installed';
+                            return (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={installMode === mode}
+                                    className={installMode === mode ? 'active' : ''}
+                                    disabled={disabled}
+                                    title={disabled ? 'Outside apps are necessarily not installed.' : undefined}
+                                    onClick={() => updateAdvancedDraft((current) => withAdvancedInstallMode(current, mode))}
+                                >
+                                    {label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </section>
+
+                <section className="advanced-filter-section advanced-range-group">
+                    <div className="advanced-filter-section-title"><strong>Cloud</strong></div>
+                    <div className="advanced-range-list">
+                        <div className="advanced-range-item">
+                            <div className="advanced-range-label"><span>Minimum quota</span><strong>{advancedDraft.minQuotaGiB <= 0 ? 'Any' : `≥ ${advancedDraft.minQuotaGiB.toFixed(2)} GiB`}</strong></div>
+                            <input type="range" min="0" max={MAX_CLOUD_QUOTA_GIB.toFixed(2)} step="0.01" value={advancedDraft.minQuotaGiB} onChange={(event) => updateAdvancedDraft((current) => ({ ...current, minQuotaGiB: Number(event.target.value) }))} />
+                            <div className="advanced-range-scale"><span>Any</span><span>93.13 GiB</span></div>
+                        </div>
+
+                        <div className="advanced-range-item">
+                            <div className="advanced-range-label"><span>Minimum files</span><strong>{advancedDraft.minFiles <= 0 ? 'Any' : `≥ ${advancedDraft.minFiles.toLocaleString()}`}</strong></div>
+                            <input type="range" min="0" max={MAX_CLOUD_FILES_FILTER} step="100" value={advancedDraft.minFiles} onChange={(event) => updateAdvancedDraft((current) => ({ ...current, minFiles: Number(event.target.value) }))} />
+                            <div className="advanced-range-scale"><span>Any</span><span>10,000</span></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="advanced-filter-section advanced-range-group">
+                    <div className="advanced-filter-section-title"><strong>App</strong></div>
+                    <div className="advanced-range-list">
+                        <div className="advanced-range-item">
+                            <div className="advanced-range-label"><span>Maximum size</span><strong>{appSizeFilterLabel(advancedDraft.maxAppSizeMiB)}</strong></div>
+                            <input
+                                type="range"
+                                min="0"
+                                max={APP_SIZE_FILTER_STEPS_MIB.length}
+                                step="1"
+                                value={appSizeIndex}
+                                onChange={(event) => {
+                                    const index = Number(event.target.value);
+                                    const maxAppSizeMiB = index >= APP_SIZE_FILTER_STEPS_MIB.length ? 0 : APP_SIZE_FILTER_STEPS_MIB[index];
+                                    updateAdvancedDraft((current) => ({ ...current, maxAppSizeMiB }));
+                                }}
+                            />
+                            <div className="advanced-range-scale"><span>1 MiB</span><span>Any</span></div>
+                        </div>
+
+                        <div className={`advanced-range-item ${externalOnly ? 'locked-filter' : ''}`}>
+                            <div className="advanced-range-label"><span>Maximum price</span><strong>{externalOnly ? 'Free' : advancedDraft.maxPriceUnits >= MAX_GAME_PRICE_FILTER_UNITS ? 'Any' : advancedDraft.maxPriceUnits <= 0 ? 'Free' : `≤ ${advancedDraft.maxPriceUnits.toFixed(0)}`}</strong></div>
+                            <input
+                                type="range"
+                                min="0"
+                                max={MAX_GAME_PRICE_FILTER_UNITS}
+                                step="1"
+                                value={externalOnly ? 0 : advancedDraft.maxPriceUnits}
+                                disabled={externalOnly}
+                                onChange={(event) => updateAdvancedDraft((current) => ({ ...current, maxPriceUnits: Number(event.target.value) }))}
+                            />
+                            <div className="advanced-range-scale"><span>Free</span><span>{externalOnly ? 'Free only' : 'Any'}</span></div>
+                        </div>
+                    </div>
+                </section>
+
+                {advancedSearchMessage && <div className="advanced-search-status" role="status">{advancedSearchMessage}</div>}
+                <div className="advanced-drawer-footer">
+                    <button type="button" className="advanced-reset" disabled={advancedSearching} onClick={() => { const reset = defaultAdvancedCloudFilters(); setAdvancedDraft(reset); setAdvancedSearchMessage(null); }}>Reset all</button>
+                    <button type="button" className="primary advanced-search-submit" disabled={advancedSearching} onClick={() => void runAdvancedSearch()}>{advancedSearching ? 'Searching…' : 'Search'}</button>
+                </div>
+            </div>
+        );
     } else if (active.kind === 'info') {
         content = (
             <div className="about-modal-content">
                 <div className="about-heading">
                     <h3>VaporStow</h3>
-                    <span>v1.0.0</span>
+                    <span>v1.0.1</span>
                 </div>
                 <div className="about-contributors">
                     {ABOUT_CONTRIBUTORS.map((contributor) => (
@@ -1062,6 +1424,22 @@ function Modal({
         );
     }
 
+    if (active.kind === 'advanced-search') {
+        return (
+            <div className={`advanced-drawer-layer ${closing ? 'closing' : ''}`} onMouseDown={requestClose}>
+                <aside
+                    className={`advanced-search-drawer ${closing ? 'closing' : ''}`}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Advanced Cloud search"
+                    onMouseDown={(event) => event.stopPropagation()}
+                >
+                    {content}
+                </aside>
+            </div>
+        );
+    }
+
     return (
         <div className={`modal-backdrop ${closing ? 'closing' : ''}`} onMouseDown={requestClose}>
             <div className={`modal ${closing ? 'closing' : ''}`} onMouseDown={(event) => event.stopPropagation()}>{content}</div>
@@ -1069,7 +1447,6 @@ function Modal({
     );
 }
 
-// Orchestration de la session Steam Cloud.
 
 
 function gameInitials(name: string): string {
@@ -1081,40 +1458,99 @@ function gameInitials(name: string): string {
         .join('');
 }
 
-function GameArtwork({ game }: { game: GameStatus }) {
-    const [failed, setFailed] = useState(false);
-    const [imageRatio, setImageRatio] = useState<number | null>(null);
-    const artwork = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}/library_600x900.jpg`;
+function gameArtworkPriority(value: string): number {
+    const lower = value.toLowerCase();
+    if (lower.includes('library_600x900_2x')) return 0;
+    if (lower.includes('library_600x900')) return 1;
+    if (lower.includes('library_capsule')) return 2;
+    if (lower.includes('hero_capsule')) return 3;
+    if (lower.includes('capsule_616x353')) return 4;
+    if (lower.includes('capsule_467x181')) return 5;
+    if (lower.includes('header')) return 6;
+    if (lower.includes('capsule_231x87')) return 7;
+    return 20;
+}
 
-    useEffect(() => {
-        setFailed(false);
-        setImageRatio(null);
-    }, [game.appId]);
+function gameArtworkCandidates(game: GameStatus): string[] {
+    const base = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.appId}`;
+    const fallback = [
+        `${base}/library_600x900_2x.jpg`,
+        `${base}/library_600x900.jpg`,
+        `${base}/capsule_616x353.jpg`,
+        `${base}/header.jpg`,
+        `${base}/capsule_231x87.jpg`,
+        `https://cdn.akamai.steamstatic.com/steam/apps/${game.appId}/header.jpg`,
+        `https://cdn.akamai.steamstatic.com/steam/apps/${game.appId}/capsule_231x87.jpg`
+    ];
+    const discovered = Array.isArray(game.artworkUrls) ? game.artworkUrls : [];
+    return [...new Set([...discovered, ...fallback])]
+        .filter((url) => /^https?:\/\//i.test(url))
+        .sort((left, right) => gameArtworkPriority(left) - gameArtworkPriority(right));
+}
 
-    const artStyle = imageRatio
-        ? ({
-            '--art-width-factor': imageRatio < 1 ? imageRatio : 1,
-            '--art-height-factor': imageRatio > 1 ? 1 / imageRatio : 1
-        } as CSSProperties)
-        : undefined;
+type SteamArtworkImageProps = {
+    game: GameStatus;
+    className?: string;
+    onNaturalSize?: (width: number, height: number) => void;
+};
 
+function SteamArtworkImage({ game, className, onNaturalSize }: SteamArtworkImageProps) {
+    const candidateKey = `${game.appId}\n${(Array.isArray(game.artworkUrls) ? game.artworkUrls : []).join('\n')}`;
+    const candidates = useMemo(() => gameArtworkCandidates(game), [candidateKey]);
+    const [index, setIndex] = useState(0);
+
+    useEffect(() => setIndex(0), [candidateKey]);
+
+    const source = candidates[index];
+    if (!source) return null;
     return (
-        <div className="cloud-card-art" style={artStyle} aria-hidden="true">
+        <img
+            key={`${game.appId}-${index}-${source}`}
+            className={className}
+            src={source}
+            alt=""
+            loading="eager"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            draggable={false}
+            onLoad={(event) => {
+                const { naturalWidth, naturalHeight } = event.currentTarget;
+                if (naturalWidth > 0 && naturalHeight > 0) onNaturalSize?.(naturalWidth, naturalHeight);
+            }}
+            onError={() => setIndex((current) => Math.min(current + 1, candidates.length))}
+        />
+    );
+}
+
+async function preloadGameArtwork(game: GameStatus, budgetMs = 650): Promise<void> {
+    const started = Date.now();
+    for (const source of gameArtworkCandidates(game).slice(0, 5)) {
+        const remaining = budgetMs - (Date.now() - started);
+        if (remaining <= 0) return;
+        const loaded = await new Promise<boolean>((resolve) => {
+            const image = new Image();
+            let settled = false;
+            const finish = (value: boolean) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timer);
+                resolve(value);
+            };
+            const timer = window.setTimeout(() => finish(false), Math.min(260, remaining));
+            image.onload = () => finish(true);
+            image.onerror = () => finish(false);
+            image.referrerPolicy = 'no-referrer';
+            image.src = source;
+        });
+        if (loaded) return;
+    }
+}
+
+function GameArtwork({ game }: { game: GameStatus }) {
+    return (
+        <div className="cloud-card-art" aria-hidden="true">
             <span>{gameInitials(game.name)}</span>
-            {!failed && (
-                <img
-                    src={artwork}
-                    alt=""
-                    draggable={false}
-                    onLoad={(event) => {
-                        const { naturalWidth, naturalHeight } = event.currentTarget;
-                        if (naturalWidth > 0 && naturalHeight > 0) {
-                            setImageRatio(naturalWidth / naturalHeight);
-                        }
-                    }}
-                    onError={() => setFailed(true)}
-                />
-            )}
+            <SteamArtworkImage game={game} />
         </div>
     );
 }
@@ -1166,7 +1602,9 @@ function CloudCarousel({
     const [geometry, setGeometry] = useState({ cardWidth: 300, cardHeight: 375, artSize: 128, slot: 334 });
     const [returningGameId, setReturningGameId] = useState<GameId | null>(null);
     const previousOperationGameIdRef = useRef<GameId | null>(operationGame?.id ?? null);
-    const gameOrderKey = games.map((game) => game.id).join('|');
+    const carouselInitializedRef = useRef(false);
+    const previousGameIdsRef = useRef<GameId[]>(games.map((game) => game.id));
+    const gameOrderKey = useMemo(() => games.map((game) => game.id).join('|'), [games]);
 
     const measure = useCallback(() => {
         const rail = railRef.current;
@@ -1174,11 +1612,7 @@ function CloudCarousel({
         const width = Math.max(280, rail.clientWidth);
         const height = Math.max(180, rail.clientHeight);
 
-        // Keep the focused card visually stable across window sizes. Width is no
-        // longer forced to fit three full cards into the viewport: on narrow
-        // windows the side cards are allowed to clip, like a real carousel.
-        // Height remains the only hard constraint so nothing can be cut vertically.
-        const cardAspect = 0.80; // width / height
+        const cardAspect = 0.80; // Ratio largeur/hauteur.
         const availableHeight = Math.max(150, height - 16);
         const preferredHeight = 425;
         const cardHeight = Math.round(Math.min(preferredHeight, availableHeight));
@@ -1192,7 +1626,9 @@ function CloudCarousel({
         const actionSize = 11 + detailScale * 2;
         const actionHeight = 34 + detailScale * 12;
         const cardPadding = 11 + detailScale * 9;
+        const cardBottomPadding = Math.max(7, cardPadding * 0.55);
         const cardGap = 6 + detailScale * 6;
+        const artTopOffset = 11 + detailScale * 11;
         const next = { cardWidth, cardHeight, artSize, slot: cardWidth + gap };
         geometryRef.current = next;
         setGeometry((current) => (
@@ -1210,13 +1646,10 @@ function CloudCarousel({
         rail.style.setProperty('--carousel-action-size', `${actionSize.toFixed(2)}px`);
         rail.style.setProperty('--carousel-action-height', `${actionHeight.toFixed(2)}px`);
         rail.style.setProperty('--carousel-card-padding', `${cardPadding.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-card-bottom-padding', `${cardBottomPadding.toFixed(2)}px`);
         rail.style.setProperty('--carousel-card-gap', `${cardGap.toFixed(2)}px`);
+        rail.style.setProperty('--carousel-art-top-offset', `${artTopOffset.toFixed(2)}px`);
 
-        // The ideal home position is the true viewport midpoint, but never let
-        // the focused card collide with the filter/search row. This constraint
-        // is computed from the actual rendered controls and card height, so it
-        // remains correct at intermediate window sizes instead of relying on a
-        // brittle breakpoint.
         const controls = document.querySelector<HTMLElement>('.home-cloud-controls');
         if (controls && window.innerHeight > 620) {
             const controlsBottom = controls.getBoundingClientRect().bottom;
@@ -1266,9 +1699,8 @@ function CloudCarousel({
             const current = positionRef.current;
             const displacement = targetRef.current - current;
 
-            // Critically damped-ish spring: smooth like a console carousel, no late focus jump.
-            const stiffness = 46;
-            const damping = 11.5;
+            const stiffness = 64;
+            const damping = 14.5;
             const acceleration = displacement * stiffness - velocityRef.current * damping;
             velocityRef.current += acceleration * dt;
             const next = current + velocityRef.current * dt;
@@ -1301,7 +1733,6 @@ function CloudCarousel({
         const index = games.findIndex((game) => game.id === operationGame.id);
         if (index < 0) return;
 
-        // Lock the selected game to the exact viewport center before the loading morph is painted.
         stopAnimation();
         const centered = visualTargetForGame(index, positionRef.current);
         targetRef.current = centered;
@@ -1326,9 +1757,28 @@ function CloudCarousel({
     }, [operationGame?.id]);
 
     useLayoutEffect(() => {
+        const previousIds = previousGameIdsRef.current;
+        const previousCount = previousIds.length;
+        const previousIndex = previousCount > 0
+            ? ((Math.round(positionRef.current) % previousCount) + previousCount) % previousCount
+            : 0;
+        const previousFocusedId = previousIds[previousIndex] ?? null;
+
         measure();
-        commitPosition(0);
-        targetRef.current = 0;
+        if (!carouselInitializedRef.current) {
+            carouselInitializedRef.current = true;
+            commitPosition(0);
+            targetRef.current = 0;
+        } else if (previousFocusedId) {
+            const nextIndex = games.findIndex((game) => game.id === previousFocusedId);
+            if (nextIndex >= 0) {
+                const preserved = visualTargetForGame(nextIndex, positionRef.current);
+                commitPosition(preserved);
+                targetRef.current = preserved;
+            }
+        }
+        previousGameIdsRef.current = games.map((game) => game.id);
+
         const rail = railRef.current;
         if (!rail) return;
         const observer = new ResizeObserver(measure);
@@ -1338,7 +1788,7 @@ function CloudCarousel({
             observer.disconnect();
             window.removeEventListener('resize', measure);
         };
-    }, [gameOrderKey, commitPosition, measure]);
+    }, [gameOrderKey, games, commitPosition, measure, visualTargetForGame]);
 
     useEffect(() => () => stopAnimation(), [stopAnimation]);
 
@@ -1402,13 +1852,10 @@ function CloudCarousel({
         setDragging(false);
 
         if (drag.moved) {
-            // Project the flick, then snap the spring to the nearest logical card.
             const projected = positionRef.current + Math.max(-8, Math.min(8, drag.velocity)) * 0.16;
             const target = Math.round(projected);
             animateTo(target, drag.velocity * 0.32);
         } else if (drag.clickedTarget !== null) {
-            // A simple click always centers the exact card that was under the pointer.
-            // Resolve it from pointer-down so the rail cannot snap elsewhere first.
             animateTo(drag.clickedTarget);
         } else {
             animateTo(Math.round(positionRef.current));
@@ -1485,21 +1932,28 @@ function CloudCarousel({
                 animateTo(Math.round(positionRef.current) + direction);
             }}
         >
-            {games.flatMap((game, gameIndex) => {
-                const nearestTarget = visualTargetForGame(gameIndex, position);
-                const occurrenceOffsets = count > 0 && count <= 2 && !operationMode && !returningMode
-                    ? [-count, 0, count]
-                    : [0];
+            {(() => {
+                if (count === 0) return null;
 
-                return occurrenceOffsets.map((occurrenceOffset) => {
-                    const carouselTarget = nearestTarget + occurrenceOffset;
+                const renderCenter = Math.round(position);
+                const renderRadius = operationMode || returningMode
+                    ? 0
+                    : count <= 3
+                        ? 1
+                        : 2;
+                const targets = Array.from(
+                    { length: renderRadius * 2 + 1 },
+                    (_, offset) => renderCenter + offset - renderRadius
+                );
+
+                return targets.map((carouselTarget) => {
+                    const gameIndex = ((carouselTarget % count) + count) % count;
+                    const game = games[gameIndex];
                     const relative = carouselTarget - position;
                     const distance = Math.abs(relative);
                     const centerWeight = Math.max(0, 1 - Math.min(distance, 1));
                     const sideWeight = Math.max(0, 1 - Math.abs(distance - 1));
                     const opacity = Math.max(0.08, Math.min(1, 0.08 + centerWeight * 0.92 + sideWeight * 0.70));
-                    // The focused card stays at its measured size. Side cards
-                    // shrink instead of making the center card overflow vertically.
                     const scale = 0.80 + centerWeight * 0.20 + sideWeight * 0.08;
                     const brightness = 0.58 + centerWeight * 0.42 + sideWeight * 0.24;
                     const saturation = 0.62 + centerWeight * 0.38 + sideWeight * 0.22;
@@ -1512,7 +1966,7 @@ function CloudCarousel({
                     return (
                         <article
                             className={`cloud-card ${focused ? 'focused' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
-                            key={`${game.id}:${occurrenceOffset}`}
+                            key={`${game.id}:${carouselTarget}`}
                             data-game-index={gameIndex}
                             data-carousel-target={carouselTarget}
                             style={{
@@ -1553,15 +2007,19 @@ function CloudCarousel({
                             />
                             <GameArtwork game={game} />
                             <div className="cloud-card-content-stack">
+                                <div className="cloud-card-persistent-details">
+                                    <div className="cloud-card-title compact-title">
+                                        <strong title={game.name}>{compactGameName(game.name)}</strong>
+                                    </div>
+                                    <div className="cloud-card-summary">
+                                        <span>{appInstallSizeSummary(game)}</span>
+                                    </div>
+                                </div>
+
                                 <div className="cloud-card-normal-content">
-                                    <div className="cloud-card-details">
-                                        <div className="cloud-card-title compact-title">
-                                            <strong>{game.name}</strong>
-                                        </div>
-                                        <div className="cloud-card-usage">
-                                            <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
-                                            <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
-                                        </div>
+                                    <div className="cloud-card-usage">
+                                        <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
+                                        <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
                                     </div>
                                     <button
                                         disabled={actionLabel === 'Unavailable' || game.installing}
@@ -1579,9 +2037,6 @@ function CloudCarousel({
                                 </div>
 
                                 <div className="cloud-card-loading-content" aria-live="polite">
-                                    <div className="cloud-card-title compact-title loading-slot-title">
-                                        <strong>{game.name}</strong>
-                                    </div>
                                     <div className="cloud-card-usage loading-slot-usage">
                                         <span>Cloud access.</span>
                                         {operationMode && operationGame?.id === game.id && (
@@ -1598,7 +2053,7 @@ function CloudCarousel({
                         </article>
                     );
                 });
-            })}
+            })()}
 
         </div>
     );
@@ -1625,6 +2080,8 @@ export default function App() {
     const [homeFilter, setHomeFilter] = useState<HomeCloudFilter>('all');
     const [homeQuery, setHomeQuery] = useState('');
     const [homeSearchExpanded, setHomeSearchExpanded] = useState(false);
+    const [advancedFilters, setAdvancedFilters] = useState<AdvancedCloudFilters>(() => defaultAdvancedCloudFilters());
+    const [advancedSearchRunning, setAdvancedSearchRunning] = useState(false);
     const [favoriteGameIds, setFavoriteGameIds] = useState<Set<GameId>>(() => {
         try {
             const stored = JSON.parse(window.localStorage.getItem(FAVORITE_CLOUDS_STORAGE_KEY) || '[]');
@@ -1653,8 +2110,6 @@ export default function App() {
             event.preventDefault();
             event.stopPropagation();
 
-            // From the home screen, Ctrl/Cmd+F is the global cached-file search.
-            // The compact Cloud search is intentionally mouse/touch only via its loupe.
             setSearchOpen(true);
         };
         window.addEventListener('keydown', onFindShortcut, true);
@@ -1665,7 +2120,6 @@ export default function App() {
         try {
             window.localStorage.setItem(FAVORITE_CLOUDS_STORAGE_KEY, JSON.stringify([...favoriteGameIds]));
         } catch {
-            // Favorites are a UI preference; storage failures must not block Cloud access.
         }
     }, [favoriteGameIds]);
 
@@ -1695,7 +2149,7 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        const timer = window.setTimeout(() => setIntroReady(true), 950);
+        const timer = window.setTimeout(() => setIntroReady(true), 1250);
         void window.vaporApi.isFullscreen().then(setFullscreen).catch(() => undefined);
         const removeFullscreenListener = window.vaporApi.onFullscreenChanged(setFullscreen);
         return () => {
@@ -1711,8 +2165,13 @@ export default function App() {
 
     useEffect(() => {
         if (introStage !== 'exit') return;
-        const finishIntro = window.setTimeout(() => setIntroStage('done'), 520);
+        const finishIntro = window.setTimeout(() => setIntroStage('done'), 680);
         return () => window.clearTimeout(finishIntro);
+    }, [introStage]);
+
+    useEffect(() => {
+        if (introStage !== 'done') return;
+        void window.vaporApi.startCatalogBackground().catch(() => undefined);
     }, [introStage]);
 
     useEffect(() => {
@@ -1729,9 +2188,11 @@ export default function App() {
     const filteredHomeGames = useMemo(() => {
         const query = homeQuery.trim().toLocaleLowerCase();
         const detected = [...(status?.games ?? [])]
-            .sort((a, b) => a.installSize - b.installSize || a.name.localeCompare(b.name));
+            .sort(compareHomeGames);
 
         return detected.filter((game) => {
+            if (game.quotaBytes <= 0 || game.maxFiles <= 0) return false;
+            if (homeFilter === 'advanced' && !matchesAdvancedFilters(game, advancedFilters)) return false;
             if (homeFilter === 'favorites' && !favoriteGameIds.has(game.id)) return false;
             if (homeFilter === 'installed' && !game.installed) return false;
             if (homeFilter === 'not-installed' && game.installed) return false;
@@ -1742,13 +2203,14 @@ export default function App() {
                 .toLocaleLowerCase();
             return haystack.includes(query);
         });
-    }, [status, homeFilter, homeQuery, favoriteGameIds]);
+    }, [status, homeFilter, homeQuery, favoriteGameIds, advancedFilters]);
+
+    const activeAdvancedFilterCount = useMemo(() => advancedFilterCount(advancedFilters), [advancedFilters]);
 
     const homeCarouselGames = useMemo(() => {
         if (!activeGame || phase === 'open' || filteredHomeGames.some((game) => game.id === activeGame.id)) {
             return filteredHomeGames;
         }
-        // Keep the active operation visible even if a live status refresh changes its filter bucket.
         return [...filteredHomeGames, activeGame];
     }, [filteredHomeGames, activeGame, phase]);
 
@@ -1757,6 +2219,7 @@ export default function App() {
         if (homeFilter === 'favorites') return 'No favorite Steam Clouds yet.';
         if (homeFilter === 'installed') return 'No installed Steam Clouds detected.';
         if (homeFilter === 'not-installed') return 'Every detected Steam Cloud is installed.';
+        if (homeFilter === 'advanced') return 'No results match your filters.';
         return 'No Steam Clouds detected.';
     }, [homeFilter, homeQuery]);
 
@@ -1809,13 +2272,9 @@ export default function App() {
                 }
             }
 
-            // Pour une ouverture, ne jamais exposer CloudAudit tant que Steam n'a pas
-            // confirmé la fin du pull Auto-Cloud. Le process du jeu peut démarrer avant
-            // que les derniers fichiers soient réellement présents sur le disque.
             const cloudReady = cloudMarker === undefined || !expected || progress?.state === 'complete';
             if (game.running === expected && cloudReady) return game;
 
-            // Relancer avec backoff si une update Steam a consommé la demande.
             const now = Date.now();
             const retryReady = progress?.state === 'complete' || now - started >= 120_000;
             if (expected && !game.running && retryReady && now >= nextLaunchRetry) {
@@ -1844,7 +2303,6 @@ export default function App() {
             setSessionDirty(false);
             setNavKey((value) => value + 1);
 
-            // Sérialiser Steam, jeu, rebuild puis explorer sous la même animation.
             let openingStatus = await window.vaporApi.getStatus();
             setStatus(openingStatus);
             if (!openingStatus.steamInstalled) throw new Error('Steam is not installed.');
@@ -1856,7 +2314,6 @@ export default function App() {
                 openingStatus = await waitForSteamRunning(true);
             }
 
-            // Réinitialiser le Cloud log et fallback sur un marker s'il reste verrouillé.
             setOperationDetail('Preparing Steam Cloud session…');
             const pullLog = await window.vaporApi.resetCloudLog();
 
@@ -1871,12 +2328,9 @@ export default function App() {
                 const finalPull = await window.vaporApi.getCloudProgress(game.id, pullLog.marker, 'down').catch(() => null);
                 if (finalPull) setTransferProgress(finalPull);
 
-                // Laisser les dernières écritures locales de Steam se stabiliser avant
-                // de lire/reconstruire CloudAudit.
                 await sleep(500);
             }
 
-            // Rebuild les payloads split après le pull et avant d'afficher l'explorer.
             setOperationDetail('Rebuilding split files…');
             setTransferProgress(null);
 
@@ -1957,7 +2411,7 @@ export default function App() {
             const restoredStatus = await window.vaporApi.getStatus();
             setStatus(restoredStatus);
             const restoredGame = restoredStatus.games.find((item) => item.id === game.id) || synced;
-            await window.vaporApi.rememberUsage(game.id, restoredGame.auditBytes, restoredGame.cloudFiles);
+            await window.vaporApi.rememberUsage(game.id, restoredGame.auditBytes, restoredGame.auditFiles);
             await window.vaporApi.rebuildCloudIndex(game.id).catch(() => 0);
             await refresh();
 
@@ -2042,8 +2496,6 @@ export default function App() {
         setSearchOpen(false);
         setPhase('closed');
 
-        // Toute nouvelle ouverture normale repart de la racine CloudAudit.
-        // Ne jamais conserver le sous-dossier visité avant une synchronisation.
         setListing({ directory: '', entries: [] });
         setNavDirection('same');
         setNavKey((value) => value + 1);
@@ -2068,9 +2520,8 @@ export default function App() {
             setOperationDetail('Preparing the Cloud for a safe close…');
             setPhase('closing');
 
-            // Opening the Cloud may reconstruct split files into their normal form.
-            // Rebuild the exact Steam-facing representation before closing, even when
-            // the user did not edit anything. This is a no-op for ordinary files.
+            const logicalUsage = await window.vaporApi.getAuditUsage(game.id);
+
             const preparation = await window.vaporApi.prepareSync(game.id);
             if (preparation.splitFiles > 0) {
                 setOperationDetail(
@@ -2088,10 +2539,7 @@ export default function App() {
 
             const afterClose = await window.vaporApi.getStatus();
             setStatus(afterClose);
-            const closedState = afterClose.games.find((item) => item.id === game.id);
-            if (closedState) {
-                await window.vaporApi.rememberUsage(game.id, closedState.auditBytes, closedState.cloudFiles);
-            }
+            await window.vaporApi.rememberUsage(game.id, logicalUsage.bytes, logicalUsage.files);
 
             closeCloudSession();
             await refresh();
@@ -2145,9 +2593,8 @@ export default function App() {
             setTransferProgress(null);
             setPhase('saving');
 
-            // Capturer l'état user-facing avant que les gros fichiers soient replacés
-            // par leur représentation split destinée à Steam. Le snapshot reste en RAM
-            // et n'est commité dans SQLite qu'après confirmation de la sync.
+            const logicalUsage = await window.vaporApi.getAuditUsage(game.id);
+
             try {
                 await window.vaporApi.stageCloudIndex(game.id);
                 indexStaged = true;
@@ -2155,7 +2602,6 @@ export default function App() {
                 indexStaged = false;
             }
 
-            // Préparer le split transactionnel avant la fermeture du jeu et la sync.
             const preparation = await window.vaporApi.prepareSync(game.id);
             if (preparation.splitFiles > 0 && preparation.reusedParts > 0) {
                 setOperationDetail(
@@ -2174,7 +2620,6 @@ export default function App() {
 
             let syncResult: Awaited<ReturnType<typeof window.vaporApi.waitForCloudSync>> | null = null;
 
-            // Réinitialiser le Cloud log juste avant la fermeture pour isoler ce push.
             setOperationDetail('Preparing Steam Cloud upload…');
             await window.vaporApi.resetCloudLog();
 
@@ -2215,19 +2660,13 @@ export default function App() {
                 return false;
             }
 
-            // Steam Cloud ne conserve pas les dossiers vides. Les retirer seulement après
-            // une synchronisation réussie pour garder le miroir local cohérent sans perdre
-            // d'état local si l'upload échoue.
             await window.vaporApi.pruneEmptyDirectories(game.id);
 
-            // Garder localement la représentation split qui vient d'être synchronisée.
             const afterSync = await window.vaporApi.getStatus();
             setStatus(afterSync);
-            const syncedState = afterSync.games.find((item) => item.id === game.id) || current;
-            await window.vaporApi.rememberUsage(game.id, syncedState.auditBytes, syncedState.cloudFiles);
+            await window.vaporApi.rememberUsage(game.id, logicalUsage.bytes, logicalUsage.files);
             if (indexStaged) await window.vaporApi.commitCloudIndex(game.id).catch(() => 0);
 
-            // Conserver le progress final pour l'animation puis vider le Cloud log.
             await window.vaporApi.resetCloudLog();
 
             setOperationDetail('Steam Cloud synchronized.');
@@ -2240,7 +2679,6 @@ export default function App() {
         } catch (error) {
             if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
 
-            // Restaurer les originaux si l'échec arrive avant la fermeture du jeu.
             if (!stopStarted) {
                 await restoreSplitFilesSafe(game.id);
 
@@ -2273,9 +2711,6 @@ export default function App() {
         }
     }
 
-    // Auto-sync utilise exactement le même chemin que le bouton Synchronize.
-    // Cela couvre aussi les modifications faites directement dans le dossier local
-    // même si elles n'ont pas été créées depuis l'UI de VaporStow.
     automaticSessionActionRef.current = async () => {
         const id = activeGameIdRef.current;
         const currentStatus = statusRef.current;
@@ -2314,7 +2749,6 @@ export default function App() {
             if (automaticSessionActionRunning.current || windowCloseHandling.current) return;
             if (Date.now() - lastActivityAt.current < AFK_TIMEOUT_MS) return;
 
-            // Réarmer immédiatement pour qu'un échec ne déclenche pas une boucle serrée.
             lastActivityAt.current = Date.now();
             automaticSessionActionRunning.current = true;
             void automaticSessionActionRef.current().finally(() => {
@@ -2339,8 +2773,6 @@ export default function App() {
             void (async () => {
                 let canClose = false;
                 try {
-                    // Si une ouverture/sauvegarde est déjà en cours, attendre son état
-                    // stable plutôt que de couper Steam au milieu d'une opération.
                     while (true) {
                         if (!activeGameIdRef.current && phaseRef.current === 'closed') {
                             canClose = true;
@@ -2378,9 +2810,8 @@ export default function App() {
         <>
             {showIntroOverlay && (
                 <div className={`startup-splash startup-overlay ${introStage === 'exit' ? 'exiting' : ''}`} aria-label="Application is starting">
-                    <div className="startup-glow" />
-                    <img className="startup-logo" src={startupLogo} alt="" />
-                    <div className="startup-loader"><span /></div>
+                    <div className="startup-wordmark">VaporStow</div>
+                    <div className="startup-loader" aria-label="Loading local Steam Clouds"><span /></div>
                 </div>
             )}
 
@@ -2449,15 +2880,36 @@ export default function App() {
                                             <button
                                                 key={value}
                                                 type="button"
-                                                className={homeFilter === value ? 'active' : ''}
-                                                aria-pressed={homeFilter === value}
+                                                className={homeFilter === value && modal?.kind !== 'advanced-search' ? 'active' : ''}
+                                                aria-pressed={homeFilter === value && modal?.kind !== 'advanced-search'}
                                                 disabled={Boolean(activeGame && phase !== 'open')}
-                                                onClick={() => setHomeFilter(value)}
+                                                onClick={() => {
+                                                    setHomeFilter(value);
+                                                    if (modal?.kind === 'advanced-search') setModal(null);
+                                                }}
                                             >
                                                 <span>{label}</span>
                                             </button>
                                         ))}
                                     </div>
+
+                                    <button
+                                        type="button"
+                                        className={`home-advanced-filter ${modal?.kind === 'advanced-search' ? 'drawer-open' : ''} ${homeFilter === 'advanced' ? 'active' : ''}`}
+                                        title="Advanced Cloud search"
+                                        aria-label="Advanced Cloud search"
+                                        aria-pressed={homeFilter === 'advanced' || modal?.kind === 'advanced-search'}
+                                        aria-expanded={modal?.kind === 'advanced-search'}
+                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        onClick={() => {
+                                            setHomeQuery('');
+                                            setHomeSearchExpanded(false);
+                                            setModal({ kind: 'advanced-search' });
+                                        }}
+                                    >
+                                        <SlidersIcon size={15} />
+                                        {activeAdvancedFilterCount > 0 && <span>{activeAdvancedFilterCount}</span>}
+                                    </button>
 
                                     <div className={`home-cloud-search ${homeSearchExpanded ? 'expanded' : ''}`}>
                                         <button
@@ -2500,20 +2952,27 @@ export default function App() {
                                 </div>
                             </div>
 
-                            {homeCarouselGames.length > 0 ? (
+                            {advancedSearchRunning ? (
+                                <div className="home-advanced-search-loading" role="status" aria-label="Searching Steam Clouds">
+                                    <div className="home-advanced-search-orbit" aria-hidden="true"><span /></div>
+                                </div>
+                            ) : homeCarouselGames.length > 0 ? (
                                 <CloudCarousel
                                     games={homeCarouselGames}
                                     actionFor={(game) => !game.platformSupported
                                         ? 'Store'
                                         : game.installing
                                             ? 'Installing…'
-                                            : !game.installed
-                                                ? 'Install'
-                                                : !game.cloudRoot
-                                                    ? 'Unavailable'
-                                                    : 'Open'}
+                                            : !game.installed && !game.inLibrary
+                                                ? 'Add to library'
+                                                : !game.installed
+                                                    ? 'Install'
+                                                    : !game.cloudRoot
+                                                        ? 'Unavailable'
+                                                        : 'Open'}
                                     onAction={(game) => {
                                         if (!game.platformSupported) void window.vaporApi.openStore(game.id);
+                                        else if (!game.installed && !game.inLibrary) void window.vaporApi.installGame(game.id);
                                         else if (!game.installed) setModal({ kind: 'install', game });
                                         else setModal({ kind: 'open', game });
                                     }}
@@ -2527,8 +2986,7 @@ export default function App() {
                             ) : (
                                 <div className="home-cloud-empty" role="status">
                                     {homeFilter === 'favorites' ? <FavoriteIcon active size={22} /> : <SearchIcon size={22} />}
-                                    <strong>{homeEmptyMessage}</strong>
-                                    <span>Change the filter or search to show another Cloud.</span>
+                                    {homeEmptyMessage && <strong>{homeEmptyMessage}</strong>}
                                 </div>
                             )}
                         </section>
@@ -2588,6 +3046,19 @@ export default function App() {
                     return synchronize(game, { skipEmptyFoldersWarning: true });
                 }}
                 onMutation={() => setSessionDirty(true)}
+                advancedFilters={advancedFilters}
+                setAdvancedFilters={setAdvancedFilters}
+                activateAdvancedFilter={() => {
+                    setHomeFilter('advanced');
+                    setHomeQuery('');
+                    setHomeSearchExpanded(false);
+                }}
+                resetAdvancedSearch={() => {
+                    setHomeQuery('');
+                    setHomeSearchExpanded(false);
+                }}
+                setAdvancedSearchRunning={setAdvancedSearchRunning}
+                applyStatus={setStatus}
             />
         </>
     );

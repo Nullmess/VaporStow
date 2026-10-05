@@ -3,13 +3,16 @@
 ## [1.0.1]
 
 - Reworked the Steam Cloud home screen.
-- Added Cloud filters, favorites and Cloud search.
-- Improved the infinite Cloud carousel.
-- Improved card sizing, artwork and responsive layout.
-- Improved fullscreen and window controls.
-- Improved startup and Info modal loading.
-- Kept global file search on `Ctrl+F` / `Cmd+F`.
-- Fixed Cloud loading position and fullscreen file pickers.
+- Added filters, favorites and Cloud search.
+- Added generic Steam Cloud discovery.
+- Added restricted pattern support.
+- Added non-recursive Cloud support.
+- Added transparent carrier storage.
+- Added multi-rule AppID support.
+- Added Cloud metadata and artwork.
+- Added outside-library discovery.
+- Improved startup, fullscreen and responsive layout.
+- Fixed Cloud cards, search results and sync counters.
 
 ## [1.0.0]
 
