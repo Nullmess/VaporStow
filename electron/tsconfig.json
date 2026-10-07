@@ -8,7 +8,15 @@
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
-        "types": ["node"]
+        "types": [
+            "node"
+        ],
+        "lib": [
+            "ES2022",
+            "DOM"
+        ]
     },
-    "include": ["**/*.ts"]
+    "include": [
+        "**/*.ts"
+    ]
 }

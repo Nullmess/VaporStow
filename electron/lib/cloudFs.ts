@@ -7,6 +7,7 @@ export const AUDIT_FOLDER = 'CloudAudit';
 export const MAX_SYNC_FILE_BYTES = 100 * 1024 * 1024;
 export const SYNC_CHUNK_BYTES = 95 * 1024 * 1024;
 export const SPLIT_STORAGE_FOLDER = 'VaporStow.parts';
+export const PROTECTED_STORAGE_FOLDER = 'VaporStow.pools';
 const SPLIT_MANIFEST_FILE = 'manifest.vstow.json';
 const SPLIT_MANIFEST_VERSION = 2;
 const SPLIT_STAGING_PREFIX = `${SPLIT_STORAGE_FOLDER}.staging-`;
@@ -79,6 +80,11 @@ export type SplitRestoreProgressHandler = (progress: SplitRestoreProgress) => vo
 function isSplitInternalName(name: string): boolean {
     return name === SPLIT_STORAGE_FOLDER || name.startsWith(SPLIT_STAGING_PREFIX);
 }
+
+function isInternalRootName(name: string): boolean {
+    return isSplitInternalName(name) || name === PROTECTED_STORAGE_FOLDER;
+}
+
 
 function splitStorageRoot(cloudRoot: string): string {
     return path.join(auditRoot(cloudRoot), SPLIT_STORAGE_FOLDER);
@@ -1218,7 +1224,7 @@ export async function listAuditDirectory(
 
     for (const dirent of dirents) {
         if (!dirent.isDirectory() && !dirent.isFile()) continue;
-        if (!directory && isSplitInternalName(dirent.name)) continue;
+        if (!directory && isInternalRootName(dirent.name)) continue;
         const relative = path.join(directory, dirent.name);
         let size = 0;
         if (dirent.isFile()) size = (await fsp.stat(path.join(absolute, dirent.name))).size;
@@ -1397,6 +1403,64 @@ async function copyFile(source: string, destination: string): Promise<void> {
     }
 }
 
+export type MappedImportFile = {
+    source: string;
+    relativePath: string;
+};
+
+function safeMappedRelativePath(value: string): string {
+    const normalized = value.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!normalized || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
+        throw new Error('Invalid import path.');
+    }
+    return normalized;
+}
+
+export async function preflightMappedFilesImport(
+    cloudRoot: string,
+    relativeDirectory: string,
+    files: MappedImportFile[],
+    maxBytes: number,
+    maxFiles: number
+): Promise<ImportPlan> {
+    const destination = safeAuditPath(cloudRoot, relativeDirectory);
+    const seen = new Set<string>();
+    let bytesDelta = 0;
+    let newFiles = 0;
+
+    for (const file of files) {
+        const relativePath = safeMappedRelativePath(file.relativePath);
+        const key = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+        if (seen.has(key)) throw new Error(`Two selected files target the same path: “${relativePath}”.`);
+        seen.add(key);
+        const delta = await destinationDelta(file.source, path.join(destination, ...relativePath.split('/')));
+        bytesDelta += delta.bytesDelta;
+        newFiles += delta.newFiles;
+    }
+
+    const plan = { bytesDelta, newFiles };
+    await assertPlanFits(cloudRoot, plan, maxBytes, maxFiles);
+    return plan;
+}
+
+export async function importMappedFiles(
+    cloudRoot: string,
+    relativeDirectory: string,
+    files: MappedImportFile[],
+    maxBytes: number,
+    maxFiles: number
+): Promise<void> {
+    await preflightMappedFilesImport(cloudRoot, relativeDirectory, files, maxBytes, maxFiles);
+    const destination = safeAuditPath(cloudRoot, relativeDirectory);
+    await ensureDir(destination);
+    for (const file of files) {
+        const relativePath = safeMappedRelativePath(file.relativePath);
+        const target = path.join(destination, ...relativePath.split('/'));
+        await ensureDir(path.dirname(target));
+        await copyFile(file.source, target);
+    }
+}
+
 export async function importFiles(
     cloudRoot: string,
     relativeDirectory: string,
@@ -1528,6 +1592,47 @@ export async function pruneEmptyAuditDirectories(cloudRoot: string): Promise<{ r
     }
 
     await prune(root, true);
+    return { removed };
+}
+
+export async function pruneEmptyAuditSubtree(cloudRoot: string, relativeDirectory: string): Promise<{ removed: number }> {
+    const target = safeAuditPath(cloudRoot, relativeDirectory);
+    const root = path.resolve(auditRoot(cloudRoot));
+    if (target === root) return { removed: 0 };
+
+    let removed = 0;
+    async function prune(directory: string): Promise<boolean> {
+        let entries: fs.Dirent[];
+        try {
+            entries = await fsp.readdir(directory, { withFileTypes: true });
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+            throw error;
+        }
+
+        for (const entry of entries) {
+            if (entry.isDirectory()) await prune(path.join(directory, entry.name));
+        }
+
+        const remaining = await fsp.readdir(directory).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return [];
+            throw error;
+        });
+        if (remaining.length > 0) return false;
+
+        try {
+            await fsp.rmdir(directory);
+            removed += 1;
+            return true;
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === 'ENOENT') return true;
+            if (code === 'ENOTEMPTY' || code === 'EEXIST') return false;
+            throw error;
+        }
+    }
+
+    await prune(target);
     return { removed };
 }
 

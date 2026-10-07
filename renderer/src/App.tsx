@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type CSSProperties } from 'react';
-import type { AppStatus, AuditEntry, CloudSearchEntry, CloudTransferProgress, DirectoryListing, GameStatus, SplitRestoreProgress } from './types';
+import type { AppStatus, AuditEntry, CloudSearchEntry, CloudTransferProgress, DirectoryListing, GameStatus, GatherRepairPlan, ImportSelection, PendingProtectedDeletion, ProtectionInfo, ProtectedPoolSummary, ProtectedRepairIssue, SplitRestoreProgress } from './types';
 
 type GameId = GameStatus['id'];
 type Phase = 'closed' | 'opening' | 'open' | 'closing' | 'saving' | 'saved';
 type NavDirection = 'forward' | 'back' | 'same';
-type HomeCloudFilter = 'all' | 'favorites' | 'installed' | 'not-installed' | 'advanced';
+type HomeCloudFilter = 'all' | 'favorites' | 'installed' | 'not-installed' | 'protected' | 'hidden' | 'advanced';
 
 type AdvancedCloudFilters = {
     includeLocal: boolean;
@@ -73,12 +73,13 @@ type ModalState =
     | null
     | { kind: 'install'; game: GameStatus }
     | { kind: 'open'; game: GameStatus; target?: CloudSearchEntry }
-    | { kind: 'import'; game: GameStatus; directory: string }
+    | { kind: 'import'; game: GameStatus; directory: string; files: ImportSelection[] }
     | { kind: 'folder'; game: GameStatus; directory: string }
     | { kind: 'delete'; game: GameStatus; entry: AuditEntry }
     | { kind: 'empty-folders-sync'; game: GameStatus }
     | { kind: 'info' }
     | { kind: 'advanced-search' }
+    | { kind: 'repair'; game: GameStatus; issue: ProtectedRepairIssue; targetWorked: boolean; target?: CloudSearchEntry }
     | { kind: 'message'; title: string; body: string };
 
 type ExplorerSelection = AuditEntry | {
@@ -94,6 +95,10 @@ const MIB = 1024 ** 2;
 const GIB = 1024 ** 3;
 const AFK_TIMEOUT_MS = 10 * 60 * 1000;
 const FAVORITE_CLOUDS_STORAGE_KEY = 'vaporstow.favorite-clouds.v1';
+const HIDDEN_CLOUDS_STORAGE_KEY = 'vaporstow.hidden-clouds.v1';
+const PROTECTED_LIBRARY_FOLDER = 'VaporStow Protected';
+const PROTECTED_MIN_QUOTA_BYTES = 100_000_000_000;
+const PROTECTED_MIN_FILE_SLOTS = 10_000;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -126,6 +131,37 @@ function formatBytes(bytes: number): string {
     const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
     const value = bytes / 1024 ** exponent;
     return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(2)} ${units[exponent]}`;
+}
+
+function protectionLabel(info: ProtectionInfo): string {
+    if (info.mode === 'mirror') return 'Mirror';
+    if (info.dataShards && info.parityShards) return `RS ${info.dataShards}+${info.parityShards}`;
+    return 'RS';
+}
+
+function protectionTooltip(info: ProtectionInfo): string {
+    const title = info.mode === 'mirror'
+        ? 'Mirror'
+        : info.dataShards && info.parityShards
+            ? `Reed–Solomon ${info.dataShards}+${info.parityShards}`
+            : 'Reed–Solomon';
+    const description = info.mode === 'mirror'
+        ? 'Full copies stored across multiple Clouds.'
+        : 'Data and parity split across multiple Clouds.';
+    const members = info.memberNames.length > 0 ? info.memberNames.join('\n') : info.memberGameIds.join('\n');
+    return `${title}\n${description}\n\n${members}`;
+}
+
+function ProtectionBadge({ info }: { info: ProtectionInfo }) {
+    return (
+        <span
+            className={`protection-badge ${info.mode} ${info.state}`}
+            title={protectionTooltip(info)}
+            aria-label={`${protectionLabel(info)} protected storage`}
+        >
+            {protectionLabel(info)}
+        </span>
+    );
 }
 
 function formatEta(seconds: number): string {
@@ -174,6 +210,17 @@ function requiredSpaceLabel(bytes: number): string {
     if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
     if (bytes >= GIB) return `${(bytes / GIB).toFixed(2)} GiB`;
     return formatBytes(bytes);
+}
+
+function reedSolomonLayout(count: number): { dataShards: number; parityShards: number } | null {
+    if (count < 3) return null;
+    if (count === 3) return { dataShards: 2, parityShards: 1 };
+    if (count === 4) return { dataShards: 3, parityShards: 1 };
+    if (count === 5) return { dataShards: 3, parityShards: 2 };
+    if (count === 6) return { dataShards: 4, parityShards: 2 };
+    if (count === 7) return { dataShards: 4, parityShards: 3 };
+    const parityShards = Math.max(2, Math.floor(count / 3));
+    return { dataShards: count - parityShards, parityShards };
 }
 
 function remainingFileSlots(game: GameStatus, open: boolean): number | null {
@@ -362,6 +409,24 @@ function FavoriteIcon({ active = false, size = 15 }: { active?: boolean; size?: 
             aria-hidden="true"
         >
             <path d="m12 3 2.78 5.63 6.22.9-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.92 1.06-6.2L3 9.53l6.22-.9L12 3Z" />
+        </svg>
+    );
+}
+
+function VisibilityIcon({ hidden = false, size = 15 }: { hidden?: boolean; size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z" />
+            <circle cx="12" cy="12" r="2.6" />
+            {hidden && <path d="M4 4l16 16" />}
+        </svg>
+    );
+}
+
+function ShieldIcon({ size = 15 }: { size?: number }) {
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3l7 3v5c0 4.7-2.8 8.1-7 10-4.2-1.9-7-5.3-7-10V6l7-3Z" />
         </svg>
     );
 }
@@ -571,6 +636,17 @@ function SearchModal({
         };
     }, [query]);
 
+    const visibleResults = useMemo(
+        () => results.filter((entry) => !(entry.type === 'directory' && normalizeRelative(entry.path) === PROTECTED_LIBRARY_FOLDER)),
+        [results]
+    );
+
+    const searchDisplayPath = (entry: CloudSearchEntry): string => {
+        const normalized = normalizeRelative(entry.path);
+        const prefix = `${PROTECTED_LIBRARY_FOLDER}/`;
+        return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+    };
+
     const requestClose = useCallback(() => {
         if (closing) return;
         setClosing(true);
@@ -603,17 +679,17 @@ function SearchModal({
                 <div className="search-results" aria-live="polite">
                     {loading ? (
                         <div className="search-state">Searching…</div>
-                    ) : results.length === 0 ? (
+                    ) : visibleResults.length === 0 ? (
                         <div className="search-state">
                             {query ? 'No cached item matches this search.' : 'No cached Cloud data yet. Open a supported Cloud once to index it.'}
                         </div>
                     ) : (
                         <div className="search-grid">
-                            {results.map((entry) => (
+                            {visibleResults.map((entry) => (
                                 <button
                                     key={`${entry.gameId}:${entry.path}`}
                                     className="search-result"
-                                    title={`${entry.path}
+                                    title={`${searchDisplayPath(entry)}
 ${entry.gameName} · ${entry.volumeName}`}
                                     onClick={() => openEntry(entry)}
                                 >
@@ -621,6 +697,7 @@ ${entry.gameName} · ${entry.volumeName}`}
                                         {entry.type === 'directory' ? <FolderIcon /> : <FileIcon />}
                                     </span>
                                     <strong>{entry.name}</strong>
+                                    {entry.protection && <ProtectionBadge info={entry.protection} />}
                                     <small className="search-result-size">
                                         {entry.type === 'file' ? formatBytes(entry.size) : 'Folder'}
                                     </small>
@@ -666,6 +743,7 @@ function Explorer({
     setSelected,
     navigate,
     setModal,
+    beginImport,
     synchronize,
     syncNotice,
     navDirection,
@@ -679,6 +757,7 @@ function Explorer({
     setSelected: (entry: ExplorerSelection | null) => void;
     navigate: (directory: string) => Promise<void>;
     setModal: (modal: ModalState) => void;
+    beginImport: (game: GameStatus, directory: string, droppedPaths?: string[]) => Promise<void>;
     synchronize: (game: GameStatus) => Promise<boolean>;
     syncNotice: string | null;
     navDirection: NavDirection;
@@ -767,6 +846,7 @@ function Explorer({
                         <BackIcon />
                     </button>
                     <div className="cloud-game-art" aria-hidden="true">
+                        <span className="cloud-game-art-loader"><span /></span>
                         <SteamArtworkImage game={game} />
                     </div>
                     <div className="cloud-title">
@@ -811,7 +891,7 @@ function Explorer({
                         className="cloud-action-icon"
                         aria-label="Import files"
                         title={fileSlots === 0 ? 'No new file slots remain; replacing existing files is still possible' : 'Import files or a folder'}
-                        onClick={() => setModal({ kind: 'import', game, directory })}
+                        onClick={() => void beginImport(game, directory)}
                     >
                         <ImportIcon />
                     </button>
@@ -826,9 +906,19 @@ function Explorer({
                     <button
                         className="cloud-action-icon danger-action"
                         aria-label="Delete selected item"
-                        title={selectedIsParent ? 'The parent shortcut cannot be deleted' : selected ? `Delete ${selected.name}` : 'Select a file or folder to delete'}
-                        disabled={!selected || selectedIsParent}
-                        onClick={() => selected && !selectedIsParent && setModal({ kind: 'delete', game, entry: selected as AuditEntry })}
+                        title={selectedIsParent
+                            ? 'The parent shortcut cannot be deleted'
+                            : selected && selected.type === 'directory' && normalizeRelative(selected.path) === PROTECTED_LIBRARY_FOLDER
+                                ? 'This folder is managed automatically by VaporStow'
+                                : selected && 'protection' in selected && selected.protection
+                                    ? `Delete ${selected.name} from every Cloud in its protected pool`
+                                    : selected ? `Delete ${selected.name}` : 'Select a file or folder to delete'}
+                        disabled={!selected || selectedIsParent || Boolean(selected && selected.type === 'directory' && normalizeRelative(selected.path) === PROTECTED_LIBRARY_FOLDER)}
+                        onClick={() => {
+                            if (!selected || selectedIsParent) return;
+                            if (selected.type === 'directory' && normalizeRelative(selected.path) === PROTECTED_LIBRARY_FOLDER) return;
+                            setModal({ kind: 'delete', game, entry: selected as AuditEntry });
+                        }}
                     >
                         <TrashIcon />
                     </button>
@@ -883,16 +973,23 @@ function Explorer({
                                     }}
                                 >
                                     <span className="file-icon">{entry.type === 'directory' ? <FolderIcon size={16} /> : <FileIcon size={16} />}</span>
-                                    <span className="file-name">{entry.name}</span>
+                                    <span className="file-name-cell">
+                                        <span className="file-name">{entry.name}</span>
+                                        {!isParentEntry && 'protection' in entry && entry.protection && <ProtectionBadge info={entry.protection} />}
+                                    </span>
                                     <span className="file-size">{isParentEntry ? 'Parent folder' : entry.type === 'file' ? formatBytes(entry.size) : 'Folder'}</span>
                                     <button
-                                        className={`reveal-button ${isParentEntry ? 'disabled' : ''}`}
+                                        className={`reveal-button ${isParentEntry || (!isParentEntry && 'virtualProtected' in entry && entry.virtualProtected) ? 'disabled' : ''}`}
                                         aria-label={isParentEntry ? 'Parent folder shortcut' : `Show ${entry.name} in system folder`}
-                                        title={isParentEntry ? 'Parent folder' : 'Show in folder'}
-                                        disabled={isParentEntry}
+                                        title={isParentEntry
+                                            ? 'Parent folder'
+                                            : (!isParentEntry && 'virtualProtected' in entry && entry.virtualProtected)
+                                                ? 'This file is distributed across a protected pool'
+                                                : 'Show in folder'}
+                                        disabled={isParentEntry || Boolean(!isParentEntry && 'virtualProtected' in entry && entry.virtualProtected)}
                                         onClick={(event) => {
                                             event.stopPropagation();
-                                            if (isParentEntry) return;
+                                            if (isParentEntry || ('virtualProtected' in entry && entry.virtualProtected)) return;
                                             setSelected(entry);
                                             void revealEntry(entry as AuditEntry);
                                         }}
@@ -936,7 +1033,12 @@ function Modal({
     activateAdvancedFilter,
     resetAdvancedSearch,
     setAdvancedSearchRunning,
-    applyStatus
+    applyStatus,
+    steamRunning,
+    games,
+    confirmProtectedImport,
+    confirmProtectedDelete,
+    confirmProtectedRepair
 }: {
     modal: ModalState;
     close: () => void;
@@ -951,6 +1053,11 @@ function Modal({
     resetAdvancedSearch: () => void;
     setAdvancedSearchRunning: (running: boolean) => void;
     applyStatus: (status: AppStatus) => void;
+    steamRunning: boolean;
+    games: GameStatus[];
+    confirmProtectedImport: (mode: 'mirror' | 'reed-solomon', origin: GameStatus, memberIds: GameId[], directory: string, files: ImportSelection[]) => Promise<void>;
+    confirmProtectedDelete: (origin: GameStatus, entry: AuditEntry) => Promise<void>;
+    confirmProtectedRepair: (modal: Extract<ModalState, { kind: 'repair' }>, choice: 'replacement' | 'gather', destinationId: GameId) => Promise<void>;
 }) {
     const [value, setValue] = useState('');
     const [visibleModal, setVisibleModal] = useState<ModalState>(modal);
@@ -959,12 +1066,24 @@ function Modal({
     const [advancedDraft, setAdvancedDraft] = useState<AdvancedCloudFilters>(() => ({ ...advancedFilters }));
     const [advancedSearching, setAdvancedSearching] = useState(false);
     const [advancedSearchMessage, setAdvancedSearchMessage] = useState<string | null>(null);
+    const [importMode, setImportMode] = useState<'normal' | 'mirror' | 'reed-solomon'>('normal');
+    const [importCloudIds, setImportCloudIds] = useState<Set<GameId>>(new Set());
+    const [repairChoice, setRepairChoice] = useState<'replacement' | 'gather'>('replacement');
+    const [repairCloudId, setRepairCloudId] = useState<GameId | null>(null);
 
     useEffect(() => {
         if (modal) {
             if (modal.kind === 'advanced-search') {
                 setAdvancedDraft({ ...advancedFilters });
                 setAdvancedSearchMessage(null);
+            }
+            if (modal.kind === 'import') {
+                setImportMode('normal');
+                setImportCloudIds(new Set([modal.game.id]));
+            }
+            if (modal.kind === 'repair') {
+                setRepairChoice('replacement');
+                setRepairCloudId(null);
             }
             setVisibleModal(modal);
             setClosing(false);
@@ -1112,7 +1231,8 @@ function Modal({
                     <button onClick={requestClose}>Cancel</button>
                     <button
                         className="primary"
-                        disabled={working}
+                        disabled={working || !steamRunning}
+                        title={!steamRunning ? 'Steam is not running' : undefined}
                         onClick={() => void run(() => window.vaporApi.installGame(game.id))}
                     >
                         {working ? 'Opening Steam…' : 'Install'}
@@ -1152,33 +1272,386 @@ function Modal({
                 )}
                 <div className="modal-actions">
                     <button onClick={requestClose}>Cancel</button>
-                    <button className="primary" disabled={!enough} onClick={() => void confirmOpen(game, active.target)}>Open</button>
+                    <button
+                        className="primary"
+                        disabled={!enough || !steamRunning}
+                        title={!steamRunning ? 'Steam is not running' : undefined}
+                        onClick={() => void confirmOpen(game, active.target)}
+                    >
+                        Open
+                    </button>
                 </div>
             </>
         );
     } else if (active.kind === 'import') {
-        const remaining = remainingFileSlots(active.game, true);
-        const noSlots = remaining !== null && remaining <= 0;
+        const totalBytes = active.files.reduce((sum, file) => sum + file.size, 0);
+        const protectedOriginEligible = active.game.quotaBytes >= PROTECTED_MIN_QUOTA_BYTES
+            && active.game.maxFiles >= PROTECTED_MIN_FILE_SLOTS;
+        const location = importMode === 'normal'
+            ? [active.game.name, normalizeRelative(active.directory)].filter(Boolean).join('/')
+            : PROTECTED_LIBRARY_FOLDER;
+        const compatibleGames = games
+            .filter((game) => game.id === active.game.id || (
+                game.quotaBytes >= PROTECTED_MIN_QUOTA_BYTES
+                && game.maxFiles >= PROTECTED_MIN_FILE_SLOTS
+            ));
+        const protectedReadiness = (game: GameStatus): { ready: boolean; reason: string | null } => {
+            if (game.id === active.game.id) return { ready: true, reason: null };
+            if (!game.platformSupported) return { ready: false, reason: 'Not supported on this platform' };
+            if (game.installing) return { ready: false, reason: 'Installation in progress' };
+            if (!game.installed) return { ready: false, reason: 'Install required' };
+            if (!game.cloudRoot || (!game.cloudRootExists && game.rememberedBytes === null)) {
+                return { ready: false, reason: 'Open this Cloud once first' };
+            }
+            return { ready: true, reason: null };
+        };
+        const selectedIds = importMode === 'normal' ? new Set<GameId>([active.game.id]) : importCloudIds;
+        const minimum = importMode === 'normal' ? 1 : importMode === 'mirror' ? 2 : 3;
+        const selectedCount = selectedIds.size;
+        const rsLayout = importMode === 'reed-solomon' ? reedSolomonLayout(selectedCount) : null;
+        const perCloudBytes = importMode === 'reed-solomon' && rsLayout
+            ? active.files.reduce((sum, file) => sum + Math.ceil(file.size / rsLayout.dataShards), 0)
+            : totalBytes;
+        const perCloudFiles = active.files.length + (importMode === 'normal' ? 0 : 1);
+        const protectedCloudAvailable = (game: GameStatus): boolean => {
+            if (game.id === active.game.id) return true;
+            const readiness = protectedReadiness(game);
+            const usedBytes = game.rememberedBytes ?? 0;
+            const usedFiles = game.rememberedFiles ?? 0;
+            const fits = usedBytes + perCloudBytes <= game.quotaBytes && usedFiles + perCloudFiles <= game.maxFiles;
+            return readiness.ready && !game.running && fits;
+        };
+        const displayedGames = [...compatibleGames].sort((left, right) => {
+            if (left.id === active.game.id) return -1;
+            if (right.id === active.game.id) return 1;
+            const leftAvailable = protectedCloudAvailable(left);
+            const rightAvailable = protectedCloudAvailable(right);
+            if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
+            return left.name.localeCompare(right.name);
+        });
+        const selectedGames = compatibleGames.filter((game) => selectedIds.has(game.id));
+        const targetRunningBlocked = selectedGames.some((game) => game.id !== active.game.id && game.running);
+        const capacityBlocked = importMode !== 'normal' && selectedGames.some((game) => {
+            const usedBytes = game.id === active.game.id ? game.auditBytes : (game.rememberedBytes ?? 0);
+            const usedFiles = game.id === active.game.id ? game.auditFiles : (game.rememberedFiles ?? 0);
+            return usedBytes + perCloudBytes > game.quotaBytes || usedFiles + perCloudFiles > game.maxFiles;
+        });
+        const enoughClouds = selectedCount >= minimum;
+        const canImport = enoughClouds
+            && (importMode === 'normal' || protectedOriginEligible)
+            && !capacityBlocked
+            && !targetRunningBlocked
+            && !working;
+
+        const chooseMode = (mode: 'normal' | 'mirror' | 'reed-solomon') => {
+            if (mode !== 'normal' && !protectedOriginEligible) return;
+            setImportMode(mode);
+            if (mode === 'normal') setImportCloudIds(new Set([active.game.id]));
+            else setImportCloudIds((current) => {
+                const next = new Set([...current].filter((id) => {
+                    const game = games.find((candidate) => candidate.id === id);
+                    return Boolean(game
+                        && game.quotaBytes >= PROTECTED_MIN_QUOTA_BYTES
+                        && game.maxFiles >= PROTECTED_MIN_FILE_SLOTS
+                        && protectedReadiness(game).ready);
+                }));
+                next.add(active.game.id);
+                return next;
+            });
+        };
+        const toggleCloud = (game: GameStatus) => {
+            if (importMode === 'normal' || game.id === active.game.id) return;
+            setImportCloudIds((current) => {
+                const next = new Set(current);
+                if (next.has(game.id)) next.delete(game.id);
+                else next.add(game.id);
+                next.add(active.game.id);
+                return next;
+            });
+        };
+
         content = (
-            <>
-                <h3>Import</h3>
-                <p className="modal-copy subtle">Destination: /{normalizeRelative(active.directory)}</p>
-                <div className="slot-check">
-                    <span>File slots</span>
-                    <strong>{remaining === null ? '?' : remaining.toLocaleString()} / {active.game.maxFiles.toLocaleString()} remaining</strong>
+            <div className="import-storage-modal">
+                <div className="import-heading-row">
+                    <div>
+                        <h3>Import</h3>
+                        <p className="modal-copy subtle import-location">Location: /{location}/</p>
+                    </div>
+                    <div className="import-selection-summary">
+                        <strong>{active.files.length.toLocaleString()} File{active.files.length === 1 ? '' : 's'}</strong>
+                        <small>{formatBytes(totalBytes)}</small>
+                    </div>
                 </div>
-                {noSlots && <p className="modal-copy warning-copy">No new file slots remain. Replacing an existing file is allowed, but any import that adds a new file will be blocked.</p>}
-                <div className="choice-row">
-                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFiles(active.game.id, active.directory), active.game, active.directory, true)}>
-                        {working ? 'Importing…' : 'Files'}
-                    </button>
-                    <button disabled={working} onClick={() => void run(() => window.vaporApi.importFolder(active.game.id, active.directory), active.game, active.directory, true)}>
-                        {working ? 'Importing…' : 'Folder'}
+
+                <div className="import-storage-layout">
+                    <div className="import-mode-list" role="radiogroup" aria-label="Storage mode">
+                        <button type="button" className={`import-mode-option ${importMode === 'normal' ? 'selected' : ''}`} onClick={() => chooseMode('normal')}>
+                            <span className="import-mode-radio" aria-hidden="true" />
+                            <span><strong>Normal</strong></span>
+                        </button>
+                        <button
+                            type="button"
+                            className={`import-mode-option ${importMode === 'mirror' ? 'selected' : ''}`}
+                            disabled={!protectedOriginEligible}
+                            title={protectedOriginEligible
+                                ? 'Keep a full copy on multiple Clouds.'
+                                : 'Keep a full copy on multiple Clouds. Requires at least 93 GiB and 10,000 file slots.'}
+                            onClick={() => chooseMode('mirror')}
+                        >
+                            <span className="import-mode-radio" aria-hidden="true" />
+                            <span><strong>Mirror</strong><small>2 minimum</small></span>
+                        </button>
+                        <button
+                            type="button"
+                            className={`import-mode-option ${importMode === 'reed-solomon' ? 'selected' : ''}`}
+                            disabled={!protectedOriginEligible}
+                            title={protectedOriginEligible
+                                ? 'Split data and parity across multiple Clouds.'
+                                : 'Split data and parity across multiple Clouds. Requires at least 93 GiB and 10,000 file slots.'}
+                            onClick={() => chooseMode('reed-solomon')}
+                        >
+                            <span className="import-mode-radio" aria-hidden="true" />
+                            <span><strong>Reed–Solomon</strong><small>3 minimum</small></span>
+                        </button>
+                    </div>
+
+                    <div className="import-cloud-list" aria-label="Cloud selection">
+                        {displayedGames.map((game) => {
+                            const selected = selectedIds.has(game.id);
+                            const locked = game.id === active.game.id;
+                            const normalDisabled = importMode === 'normal' && !locked;
+                            const readiness = protectedReadiness(game);
+                            const usedBytes = game.id === active.game.id ? game.auditBytes : (game.rememberedBytes ?? 0);
+                            const usedFiles = game.id === active.game.id ? game.auditFiles : (game.rememberedFiles ?? 0);
+                            const fits = importMode === 'normal' || (usedBytes + perCloudBytes <= game.quotaBytes && usedFiles + perCloudFiles <= game.maxFiles);
+                            const targetRunning = game.id !== active.game.id && game.running;
+                            const unavailable = importMode !== 'normal' && (!readiness.ready || targetRunning || !fits);
+                            const disabled = normalDisabled || unavailable;
+                            const title = locked && !fits
+                                ? 'Current Cloud does not have enough capacity for this protected import'
+                                : locked
+                                    ? 'Current Cloud · always included'
+                                    : normalDisabled
+                                        ? 'Select Mirror or Reed–Solomon to use additional Clouds'
+                                        : readiness.reason
+                                            ?? (targetRunning
+                                                ? 'This app is already running'
+                                                : !fits
+                                                    ? 'Not enough Cloud capacity for this import'
+                                                    : selected
+                                                        ? 'Remove from protected storage'
+                                                        : 'Add to protected storage');
+                            return (
+                                <button
+                                    type="button"
+                                    key={game.id}
+                                    className={`import-cloud-card ${selected ? 'selected' : ''} ${locked ? 'locked' : ''} ${disabled ? 'disabled' : ''}`}
+                                    aria-disabled={disabled}
+                                    tabIndex={disabled ? -1 : 0}
+                                    onClick={() => { if (!disabled) toggleCloud(game); }}
+                                    title={title}
+                                >
+                                    <span className="import-cloud-art" aria-hidden="true">
+                                        <span className="cloud-card-art-loader"><span /></span>
+                                        <SteamArtworkImage game={game} />
+                                    </span>
+                                    <span className="import-cloud-copy">
+                                        <strong>{compactGameName(game.name, 28)}</strong>
+                                        <small>{formatBytes(usedBytes)} / {quotaLabel(game.quotaBytes)} · {usedFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</small>
+                                        {importMode !== 'normal' && !locked && (readiness.reason || targetRunning || !fits) && (
+                                            <small className="import-cloud-status">{readiness.reason ?? (targetRunning ? 'Already running' : 'Not enough capacity')}</small>
+                                        )}
+                                    </span>
+                                    <span className="import-cloud-check" aria-hidden="true">{selected ? '✓' : ''}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {!enoughClouds && importMode !== 'normal' && (
+                    <p className="import-validation">Select at least {minimum} Clouds.</p>
+                )}
+                {capacityBlocked && <p className="import-validation">One selected Cloud does not have enough capacity.</p>}
+                {targetRunningBlocked && <p className="import-validation">Close other selected Steam apps before importing.</p>}
+
+                <div className="modal-actions import-actions">
+                    <button disabled={working} onClick={requestClose}>Cancel</button>
+                    <button
+                        className="primary"
+                        disabled={!canImport}
+                        onClick={() => {
+                            if (!canImport) return;
+                            if (importMode === 'normal') {
+                                void run(
+                                    () => window.vaporApi.importSelectedFiles(active.game.id, active.directory, active.files),
+                                    active.game,
+                                    active.directory,
+                                    true
+                                );
+                                return;
+                            }
+                            setWorking(true);
+                            const memberIds = [...selectedIds];
+                            close();
+                            void (async () => {
+                                await sleep(120);
+                                try {
+                                    await confirmProtectedImport(importMode, active.game, memberIds, active.directory, active.files);
+                                } catch (error) {
+                                    alert(error instanceof Error ? error.message : String(error));
+                                }
+                            })();
+                        }}
+                    >
+                        {working ? 'Preparing…' : 'Import'}
                     </button>
                 </div>
-                {working && <p className="modal-copy subtle">Copying locally. Large files can take several minutes.</p>}
-                <div className="modal-actions"><button disabled={working} onClick={requestClose}>Cancel</button></div>
-            </>
+            </div>
+        );
+    } else if (active.kind === 'repair') {
+        const corruptGames = active.issue.corruptGameIds
+            .map((id) => games.find((game) => game.id === id))
+            .filter((game): game is GameStatus => Boolean(game));
+        const replacementSingleCorrupt = active.issue.corruptGameIds.length === 1;
+        const requiredBytes = active.issue.totalBytes;
+        const requiredFiles = active.issue.fileCount;
+        const readiness = (game: GameStatus): { ready: boolean; reason: string | null } => {
+            if (game.protectedCorrupt) return { ready: false, reason: 'Corrupt Cloud' };
+            if (!game.platformSupported) return { ready: false, reason: 'Not supported on this platform' };
+            if (game.installing) return { ready: false, reason: 'Installation in progress' };
+            if (!game.installed) return { ready: false, reason: 'Install required' };
+            if (!game.cloudRoot || (!game.cloudRootExists && game.rememberedBytes === null)) return { ready: false, reason: 'Open this Cloud once first' };
+            return { ready: true, reason: null };
+        };
+        const candidateGames = games.filter((game) => {
+            if (active.issue.corruptGameIds.includes(game.id)) return false;
+            if (repairChoice === 'replacement') {
+                if (!replacementSingleCorrupt) return false;
+                if (active.targetWorked && game.id === active.game.id) return false;
+                if (active.issue.memberGameIds.includes(game.id)) return false;
+                return game.quotaBytes >= PROTECTED_MIN_QUOTA_BYTES && game.maxFiles >= PROTECTED_MIN_FILE_SLOTS;
+            }
+            const usedBytes = game.id === active.game.id && active.targetWorked ? game.auditBytes : (game.rememberedBytes ?? 0);
+            const usedFiles = game.id === active.game.id && active.targetWorked ? game.auditFiles : (game.rememberedFiles ?? 0);
+            return game.quotaBytes - usedBytes >= requiredBytes && game.maxFiles - usedFiles >= requiredFiles;
+        }).sort((left, right) => {
+            const leftReady = readiness(left).ready && (!left.running || (active.targetWorked && left.id === active.game.id));
+            const rightReady = readiness(right).ready && (!right.running || (active.targetWorked && right.id === active.game.id));
+            if (leftReady !== rightReady) return leftReady ? -1 : 1;
+            return left.name.localeCompare(right.name);
+        });
+        const selectedCandidate = repairCloudId ? candidateGames.find((game) => game.id === repairCloudId) ?? null : null;
+        const selectedReadiness = selectedCandidate ? readiness(selectedCandidate) : null;
+        const selectedRunningBlocked = Boolean(selectedCandidate?.running && !(active.targetWorked && selectedCandidate.id === active.game.id));
+        const canRepair = Boolean(
+            selectedCandidate
+            && selectedReadiness?.ready
+            && !selectedRunningBlocked
+            && (repairChoice === 'gather' || replacementSingleCorrupt)
+            && !working
+        );
+        const chooseRepair = (choice: 'replacement' | 'gather') => {
+            setRepairChoice(choice);
+            setRepairCloudId(null);
+        };
+        content = (
+            <div className="repair-storage-modal">
+                <div className="import-heading-row repair-heading-row">
+                    <div>
+                        <h3>Repair File(s)</h3>
+                    </div>
+                    <div className="import-selection-summary">
+                        <strong>{active.issue.fileCount.toLocaleString()} corrupt file{active.issue.fileCount === 1 ? '' : '(s)'}</strong>
+                        <small>{formatBytes(active.issue.totalBytes)}</small>
+                    </div>
+                </div>
+
+                <div className="repair-storage-layout">
+                    <div className="repair-left-column">
+                        <section className="repair-corrupt-section">
+                            <strong>Corrupt Game(s)</strong>
+                            <div className="repair-corrupt-list">
+                                {corruptGames.map((game) => (
+                                    <div className="import-cloud-card repair-corrupt-card" key={game.id}>
+                                        <span className="import-cloud-art" aria-hidden="true">
+                                            <span className="cloud-card-art-loader"><span /></span>
+                                            <SteamArtworkImage game={game} />
+                                        </span>
+                                        <span className="import-cloud-copy">
+                                            <strong>{compactGameName(game.name, 26)}</strong>
+                                            <small>{formatBytes(game.rememberedBytes ?? 0)} / {quotaLabel(game.quotaBytes)} · {(game.rememberedFiles ?? 0).toLocaleString()} / {game.maxFiles.toLocaleString()} files</small>
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+                        <section className="repair-choice-section">
+                            <strong>Repair Choice</strong>
+                            <button type="button" className={`import-mode-option ${repairChoice === 'replacement' ? 'selected' : ''}`} disabled={!replacementSingleCorrupt} title={replacementSingleCorrupt ? 'Replace the unavailable Cloud.' : 'Replacement repairs one unavailable Cloud at a time.'} onClick={() => chooseRepair('replacement')}>
+                                <span className="import-mode-radio" aria-hidden="true" />
+                                <span><strong>Replacement</strong></span>
+                            </button>
+                            <button type="button" className={`import-mode-option ${repairChoice === 'gather' ? 'selected' : ''}`} title="Recover the files into one Cloud and remove protected storage." onClick={() => chooseRepair('gather')}>
+                                <span className="import-mode-radio" aria-hidden="true" />
+                                <span><strong>Gather in one place</strong></span>
+                            </button>
+                        </section>
+                    </div>
+
+                    <div className="import-cloud-list repair-cloud-list" aria-label="Repair destination Cloud">
+                        {candidateGames.map((game) => {
+                            const state = readiness(game);
+                            const runningBlocked = game.running && !(active.targetWorked && game.id === active.game.id);
+                            const disabled = !state.ready || runningBlocked;
+                            const selected = game.id === repairCloudId;
+                            const title = state.reason ?? (runningBlocked ? 'This app is already running' : selected ? 'Selected repair destination' : 'Use this Cloud');
+                            return (
+                                <button
+                                    type="button"
+                                    key={game.id}
+                                    className={`import-cloud-card ${selected ? 'selected' : ''} ${disabled ? 'disabled' : ''}`}
+                                    aria-disabled={disabled}
+                                    tabIndex={disabled ? -1 : 0}
+                                    title={title}
+                                    onClick={() => { if (!disabled) setRepairCloudId(game.id); }}
+                                >
+                                    <span className="import-cloud-art" aria-hidden="true">
+                                        <span className="cloud-card-art-loader"><span /></span>
+                                        <SteamArtworkImage game={game} />
+                                    </span>
+                                    <span className="import-cloud-copy">
+                                        <strong>{compactGameName(game.name, 28)}</strong>
+                                        <small>{formatBytes(game.id === active.game.id && active.targetWorked ? game.auditBytes : (game.rememberedBytes ?? 0))} / {quotaLabel(game.quotaBytes)} · {(game.id === active.game.id && active.targetWorked ? game.auditFiles : (game.rememberedFiles ?? 0)).toLocaleString()} / {game.maxFiles.toLocaleString()} files</small>
+                                        {(state.reason || runningBlocked) && <small className="import-cloud-status">{state.reason ?? 'Already running'}</small>}
+                                    </span>
+                                    <span className="import-cloud-check" aria-hidden="true">{selected ? '✓' : ''}</span>
+                                </button>
+                            );
+                        })}
+                        {candidateGames.length === 0 && <p className="import-validation">No compatible repair destination is available.</p>}
+                    </div>
+                </div>
+
+                <div className="modal-actions import-actions">
+                    <button disabled={working} onClick={requestClose}>Cancel</button>
+                    <button
+                        className="primary"
+                        disabled={!canRepair}
+                        onClick={() => {
+                            if (!canRepair || !repairCloudId) return;
+                            setWorking(true);
+                            const snapshot = active;
+                            const choice = repairChoice;
+                            const destinationId = repairCloudId;
+                            close();
+                            void confirmProtectedRepair(snapshot, choice, destinationId);
+                        }}
+                    >
+                        {working ? 'Repairing…' : 'Repair'}
+                    </button>
+                </div>
+            </div>
         );
     } else if (active.kind === 'folder') {
         const location = normalizeRelative(active.directory);
@@ -1362,7 +1835,7 @@ function Modal({
             <div className="about-modal-content">
                 <div className="about-heading">
                     <h3>VaporStow</h3>
-                    <span>v1.0.1</span>
+                    <span>v1.0.2</span>
                 </div>
                 <div className="about-contributors">
                     {ABOUT_CONTRIBUTORS.map((contributor) => (
@@ -1395,19 +1868,27 @@ function Modal({
     } else if (active.kind === 'delete') {
         const parent = parentDirectory(active.entry.path);
         const isFolder = active.entry.type === 'directory';
+        const protection = active.entry.protection;
+        const protectedCloudCount = protection?.memberGameIds.length ?? 0;
         content = (
             <>
                 <h3>Delete {active.entry.name}</h3>
                 <p className="modal-copy warning-copy">
-                    {isFolder
-                        ? 'Are you sure you want to delete this folder and every file inside it?'
-                        : 'Are you sure you want to delete this file?'}
+                    {protection
+                        ? `This protected ${isFolder ? 'folder' : 'file'} will be removed from all ${protectedCloudCount} Clouds.`
+                        : isFolder
+                            ? 'Are you sure you want to delete this folder and every file inside it?'
+                            : 'Are you sure you want to delete this file?'}
                 </p>
                 <div className="modal-actions">
                     <button onClick={requestClose}>Cancel</button>
                     <button
                         className="danger"
-                        onClick={() => void run(() => window.vaporApi.deleteEntry(active.game.id, active.entry.path), active.game, parent, true)}
+                        disabled={working}
+                        onClick={() => {
+                            if (protection) void confirmProtectedDelete(active.game, active.entry);
+                            else void run(() => window.vaporApi.deleteEntry(active.game.id, active.entry.path), active.game, parent, true);
+                        }}
                     >
                         Delete
                     </button>
@@ -1442,21 +1923,12 @@ function Modal({
 
     return (
         <div className={`modal-backdrop ${closing ? 'closing' : ''}`} onMouseDown={requestClose}>
-            <div className={`modal ${closing ? 'closing' : ''}`} onMouseDown={(event) => event.stopPropagation()}>{content}</div>
+            <div className={`modal ${active.kind === 'import' ? 'import-modal-shell' : ''} ${closing ? 'closing' : ''}`} onMouseDown={(event) => event.stopPropagation()}>{content}</div>
         </div>
     );
 }
 
 
-
-function gameInitials(name: string): string {
-    return name
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0]?.toUpperCase() || '')
-        .join('');
-}
 
 function gameArtworkPriority(value: string): number {
     const lower = value.toLowerCase();
@@ -1498,15 +1970,17 @@ function SteamArtworkImage({ game, className, onNaturalSize }: SteamArtworkImage
     const candidateKey = `${game.appId}\n${(Array.isArray(game.artworkUrls) ? game.artworkUrls : []).join('\n')}`;
     const candidates = useMemo(() => gameArtworkCandidates(game), [candidateKey]);
     const [index, setIndex] = useState(0);
+    const [loadedSource, setLoadedSource] = useState<string | null>(null);
 
     useEffect(() => setIndex(0), [candidateKey]);
 
     const source = candidates[index];
     if (!source) return null;
+    const loaded = loadedSource === source;
     return (
         <img
             key={`${game.appId}-${index}-${source}`}
-            className={className}
+            className={`steam-artwork-image ${loaded ? 'artwork-loaded' : 'artwork-pending'}${className ? ` ${className}` : ''}`}
             src={source}
             alt=""
             loading="eager"
@@ -1515,9 +1989,15 @@ function SteamArtworkImage({ game, className, onNaturalSize }: SteamArtworkImage
             draggable={false}
             onLoad={(event) => {
                 const { naturalWidth, naturalHeight } = event.currentTarget;
-                if (naturalWidth > 0 && naturalHeight > 0) onNaturalSize?.(naturalWidth, naturalHeight);
+                if (naturalWidth > 0 && naturalHeight > 0) {
+                    setLoadedSource(source);
+                    onNaturalSize?.(naturalWidth, naturalHeight);
+                }
             }}
-            onError={() => setIndex((current) => Math.min(current + 1, candidates.length))}
+            onError={() => {
+                setLoadedSource(null);
+                setIndex((current) => Math.min(current + 1, candidates.length));
+            }}
         />
     );
 }
@@ -1549,7 +2029,7 @@ async function preloadGameArtwork(game: GameStatus, budgetMs = 650): Promise<voi
 function GameArtwork({ game }: { game: GameStatus }) {
     return (
         <div className="cloud-card-art" aria-hidden="true">
-            <span>{gameInitials(game.name)}</span>
+            <span className="cloud-card-art-loader"><span /></span>
             <SteamArtworkImage game={game} />
         </div>
     );
@@ -1561,6 +2041,9 @@ type CloudCarouselProps = {
     onAction: (game: GameStatus) => void;
     isFavorite: (id: GameId) => boolean;
     onToggleFavorite: (id: GameId) => void;
+    isHidden: (id: GameId) => boolean;
+    onToggleHidden: (id: GameId) => void;
+    steamRunning: boolean;
     operationGame?: GameStatus | null;
     operationPhase?: Phase;
     operationDetail?: string | null;
@@ -1573,6 +2056,9 @@ function CloudCarousel({
     onAction,
     isFavorite,
     onToggleFavorite,
+    isHidden,
+    onToggleHidden,
+    steamRunning,
     operationGame = null,
     operationPhase = 'closed',
     operationDetail = null,
@@ -1960,12 +2446,15 @@ function CloudCarousel({
                     const x = relative * geometry.slot;
                     const focused = distance < 0.5;
                     const actionLabel = actionFor(game);
+                    const steamActionBlocked = focused && !steamRunning && (actionLabel === 'Open' || actionLabel === 'Add to library' || actionLabel === 'Install' || actionLabel === 'Repair');
+                    const actionDisabled = (focused && actionLabel === 'Unavailable') || game.installing || steamActionBlocked;
+                    const actionDisabledReason = steamActionBlocked ? 'Steam is not running' : actionLabel === 'Repair' ? 'Repair this protected Cloud' : undefined;
                     const current = game.rememberedBytes ?? 0;
                     const currentFiles = game.rememberedFiles ?? 0;
 
                     return (
                         <article
-                            className={`cloud-card ${focused ? 'focused' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
+                            className={`cloud-card ${focused ? 'focused' : ''} ${game.protectedCorrupt ? 'protected-corrupt' : ''} ${operationMode && operationGame?.id === game.id ? 'cloud-loading-card' : ''} ${returningMode && returningGameId === game.id ? 'cloud-returning-card' : ''}`}
                             key={`${game.id}:${carouselTarget}`}
                             data-game-index={gameIndex}
                             data-carousel-target={carouselTarget}
@@ -1987,16 +2476,42 @@ function CloudCarousel({
                                 type="button"
                                 className={`cloud-card-favorite ${isFavorite(game.id) ? 'active' : ''}`}
                                 aria-label={isFavorite(game.id) ? `Remove ${game.name} from favorites` : `Add ${game.name} to favorites`}
-                                title={isFavorite(game.id) ? 'Remove from favorites' : 'Add to favorites'}
                                 data-no-carousel-drag="true"
-                                disabled={operationMode}
+                                disabled={operationMode || game.protectedCorrupt}
+                                title={game.protectedCorrupt ? 'Unavailable until protected storage is repaired' : (isFavorite(game.id) ? 'Remove from favorites' : 'Add to favorites')}
                                 onClick={(event) => {
                                     event.stopPropagation();
+                                    if (game.protectedCorrupt) return;
                                     onToggleFavorite(game.id);
                                 }}
                             >
                                 <FavoriteIcon active={isFavorite(game.id)} />
                             </button>
+                            <button
+                                type="button"
+                                className={`cloud-card-visibility ${isHidden(game.id) ? 'active' : ''}`}
+                                aria-label={isHidden(game.id) ? `Show ${game.name}` : `Hide ${game.name}`}
+                                title={game.protectedCorrupt ? 'Unavailable until protected storage is repaired' : (isHidden(game.id) ? 'Show Cloud' : 'Hide Cloud')}
+                                data-no-carousel-drag="true"
+                                disabled={operationMode || game.protectedCorrupt}
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (game.protectedCorrupt) return;
+                                    onToggleHidden(game.id);
+                                }}
+                            >
+                                <VisibilityIcon hidden={isHidden(game.id)} />
+                            </button>
+                            {game.hasProtectedFiles && (
+                                <span
+                                    className="cloud-card-protected-indicator"
+                                    title="Contains Mirror / Reed–Solomon files"
+                                    aria-label="Contains Mirror or Reed–Solomon files"
+                                    data-no-carousel-drag="true"
+                                >
+                                    <ShieldIcon />
+                                </span>
+                            )}
                             <span
                                 className={`cloud-card-status status-dot ${
                                     operationMode && operationGame?.id === game.id
@@ -2021,19 +2536,25 @@ function CloudCarousel({
                                         <span>{formatBytes(current)} / {quotaLabel(game.quotaBytes)}</span>
                                         <span>{currentFiles.toLocaleString()} / {game.maxFiles.toLocaleString()} files</span>
                                     </div>
-                                    <button
-                                        disabled={actionLabel === 'Unavailable' || game.installing}
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            if (!focused) {
-                                                animateTo(carouselTarget);
-                                                return;
-                                            }
-                                            onAction(game);
-                                        }}
+                                    <div
+                                        className={`cloud-card-action-wrap ${steamActionBlocked ? 'steam-offline' : ''}`}
+                                        title={actionDisabledReason}
                                     >
-                                        {focused ? actionLabel : 'Select'}
-                                    </button>
+                                        <button
+                                            disabled={actionDisabled}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (actionDisabled) return;
+                                                if (!focused) {
+                                                    animateTo(carouselTarget);
+                                                    return;
+                                                }
+                                                onAction(game);
+                                            }}
+                                        >
+                                            {focused ? actionLabel : 'Select'}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div className="cloud-card-loading-content" aria-live="polite">
@@ -2090,9 +2611,20 @@ export default function App() {
             return new Set<GameId>();
         }
     });
+    const [hiddenGameIds, setHiddenGameIds] = useState<Set<GameId>>(() => {
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(HIDDEN_CLOUDS_STORAGE_KEY) || '[]');
+            return new Set(Array.isArray(stored) ? stored.filter((value): value is GameId => typeof value === 'string') : []);
+        } catch {
+            return new Set<GameId>();
+        }
+    });
     const homeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const lastActivityAt = useRef(Date.now());
     const automaticSessionActionRunning = useRef(false);
+    const externalGameCloseHandling = useRef(false);
+    const externalGameCloseMisses = useRef(0);
+    const sessionCloudLogMarkerRef = useRef<number | null>(null);
     const windowCloseHandling = useRef(false);
     const activeGameIdRef = useRef<GameId | null>(activeGameId);
     const phaseRef = useRef<Phase>(phase);
@@ -2123,8 +2655,26 @@ export default function App() {
         }
     }, [favoriteGameIds]);
 
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(HIDDEN_CLOUDS_STORAGE_KEY, JSON.stringify([...hiddenGameIds]));
+        } catch {
+        }
+    }, [hiddenGameIds]);
+
     const toggleFavorite = useCallback((id: GameId) => {
+        if (statusRef.current?.games.find((game) => game.id === id)?.protectedCorrupt) return;
         setFavoriteGameIds((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }, []);
+
+    const toggleHidden = useCallback((id: GameId) => {
+        if (statusRef.current?.games.find((game) => game.id === id)?.protectedCorrupt) return;
+        setHiddenGameIds((current) => {
             const next = new Set(current);
             if (next.has(id)) next.delete(id);
             else next.add(id);
@@ -2146,6 +2696,23 @@ export default function App() {
             entries: next.entries.map((entry) => ({ ...entry, path: normalizeRelative(entry.path) }))
         });
         setSelected(null);
+    }, []);
+
+
+    const beginImport = useCallback(async (game: GameStatus, directory: string, droppedPaths?: string[]): Promise<void> => {
+        try {
+            const files = droppedPaths
+                ? await window.vaporApi.describeImportPaths(droppedPaths)
+                : (await window.vaporApi.selectImportFiles(game.id)).files;
+            if (!files.length) return;
+            setModal({ kind: 'import', game, directory: normalizeRelative(directory), files });
+        } catch (error) {
+            setModal({
+                kind: 'message',
+                title: 'Unable to import files',
+                body: error instanceof Error ? error.message : String(error)
+            });
+        }
     }, []);
 
     useEffect(() => {
@@ -2185,6 +2752,19 @@ export default function App() {
         [status, activeGameId]
     );
 
+
+    useEffect(() => {
+        return window.vaporApi.onFilesDropped((paths) => {
+            if (modal || phaseRef.current !== 'open') return;
+            const id = activeGameIdRef.current;
+            const currentStatus = statusRef.current;
+            if (!id || !currentStatus) return;
+            const game = currentStatus.games.find((candidate) => candidate.id === id);
+            if (!game) return;
+            void beginImport(game, listing.directory, paths);
+        });
+    }, [beginImport, listing.directory, modal]);
+
     const filteredHomeGames = useMemo(() => {
         const query = homeQuery.trim().toLocaleLowerCase();
         const detected = [...(status?.games ?? [])]
@@ -2192,10 +2772,17 @@ export default function App() {
 
         return detected.filter((game) => {
             if (game.quotaBytes <= 0 || game.maxFiles <= 0) return false;
+            const hidden = hiddenGameIds.has(game.id) || game.protectedCorrupt;
+            if (homeFilter === 'hidden') {
+                if (!hidden) return false;
+            } else if (hidden) {
+                return false;
+            }
             if (homeFilter === 'advanced' && !matchesAdvancedFilters(game, advancedFilters)) return false;
             if (homeFilter === 'favorites' && !favoriteGameIds.has(game.id)) return false;
             if (homeFilter === 'installed' && !game.installed) return false;
             if (homeFilter === 'not-installed' && game.installed) return false;
+            if (homeFilter === 'protected' && !game.hasProtectedFiles) return false;
             if (!query) return true;
 
             const haystack = [game.name, game.volumeName, game.appId, game.cloudPattern]
@@ -2203,7 +2790,7 @@ export default function App() {
                 .toLocaleLowerCase();
             return haystack.includes(query);
         });
-    }, [status, homeFilter, homeQuery, favoriteGameIds, advancedFilters]);
+    }, [status, homeFilter, homeQuery, favoriteGameIds, hiddenGameIds, advancedFilters]);
 
     const activeAdvancedFilterCount = useMemo(() => advancedFilterCount(advancedFilters), [advancedFilters]);
 
@@ -2219,20 +2806,11 @@ export default function App() {
         if (homeFilter === 'favorites') return 'No favorite Steam Clouds yet.';
         if (homeFilter === 'installed') return 'No installed Steam Clouds detected.';
         if (homeFilter === 'not-installed') return 'Every detected Steam Cloud is installed.';
+        if (homeFilter === 'protected') return 'No Clouds currently store Mirror or Reed–Solomon files.';
+        if (homeFilter === 'hidden') return 'No hidden Steam Clouds.';
         if (homeFilter === 'advanced') return 'No results match your filters.';
         return 'No Steam Clouds detected.';
     }, [homeFilter, homeQuery]);
-
-    async function waitForSteamRunning(expected: boolean): Promise<AppStatus> {
-        const started = Date.now();
-        while (Date.now() - started < 10 * 60 * 1000) {
-            const next = await window.vaporApi.getStatus();
-            setStatus(next);
-            if (next.steamRunning === expected) return next;
-            await sleep(750);
-        }
-        throw new Error(`Steam did not ${expected ? 'start' : 'close'} in time.`);
-    }
 
     async function waitForRunning(
         id: GameId,
@@ -2243,6 +2821,8 @@ export default function App() {
         const started = Date.now();
         let nextLaunchRetry = started + 15_000;
         let launchRetryDelay = 15_000;
+        let stableRunningSince: number | null = null;
+        const stableRunningMs = 2_500;
 
         while (Date.now() - started < 6 * 60 * 60 * 1000) {
             const [next, progress] = await Promise.all([
@@ -2273,9 +2853,15 @@ export default function App() {
             }
 
             const cloudReady = cloudMarker === undefined || !expected || progress?.state === 'complete';
-            if (game.running === expected && cloudReady) return game;
-
             const now = Date.now();
+            if (game.running === expected && cloudReady) {
+                if (!expected) return game;
+                if (stableRunningSince === null) stableRunningSince = now;
+                if (now - stableRunningSince >= stableRunningMs) return game;
+            } else if (expected) {
+                stableRunningSince = null;
+            }
+
             const retryReady = progress?.state === 'complete' || now - started >= 120_000;
             if (expected && !game.running && retryReady && now >= nextLaunchRetry) {
                 setOperationDetail('Waiting for Steam to launch the game…');
@@ -2289,7 +2875,602 @@ export default function App() {
         throw new Error('Steam did not finish the operation in time.');
     }
 
-    async function confirmOpen(game: GameStatus, target?: CloudSearchEntry) {
+    async function waitForProbeState(
+        id: GameId,
+        expected: boolean,
+        timeoutMs = 120_000,
+        stableMs = expected ? 2_500 : 0
+    ): Promise<GameStatus | null> {
+        const started = Date.now();
+        let matchingSince: number | null = null;
+        while (Date.now() - started < timeoutMs) {
+            const next = await window.vaporApi.getStatus();
+            setStatus(next);
+            const game = next.games.find((item) => item.id === id);
+            if (!game) return null;
+            if (game.running === expected) {
+                if (stableMs <= 0) return game;
+                if (matchingSince === null) matchingSince = Date.now();
+                if (Date.now() - matchingSince >= stableMs) return game;
+            } else {
+                matchingSince = null;
+            }
+            await sleep(500);
+        }
+        return null;
+    }
+
+    async function probeProtectedMember(game: GameStatus): Promise<boolean> {
+        const latest = await window.vaporApi.getStatus();
+        setStatus(latest);
+        const current = latest.games.find((item) => item.id === game.id) || game;
+        if (!current.platformSupported || current.installing || !current.installed || !current.cloudRoot) {
+            await window.vaporApi.markProtectedGameInaccessible(game.id);
+            return false;
+        }
+        if (current.running) {
+            await window.vaporApi.markProtectedGameAccessible(game.id);
+            return true;
+        }
+
+        let launched = false;
+        try {
+            setOperationDetail(`Checking ${game.name}…`);
+            await window.vaporApi.startBackgroundGuard(game.id);
+            await window.vaporApi.runGame(game.id);
+            const running = await waitForProbeState(game.id, true);
+            if (!running) {
+                await window.vaporApi.stopBackgroundGuard(game.id).catch(() => false);
+                await window.vaporApi.markProtectedGameInaccessible(game.id);
+                return false;
+            }
+            launched = true;
+            await window.vaporApi.markProtectedGameAccessible(game.id);
+        } catch {
+            await window.vaporApi.stopBackgroundGuard(game.id).catch(() => false);
+            await window.vaporApi.markProtectedGameInaccessible(game.id).catch(() => 0);
+            return false;
+        }
+
+        try {
+            await window.vaporApi.restoreSplitFiles(game.id);
+            await window.vaporApi.prepareSync(game.id);
+            const stopped = await window.vaporApi.requestStop(game.id);
+            launched = false;
+            await waitForProbeState(game.id, false, 120_000);
+            await window.vaporApi.waitForCloudSync(game.id, stopped.cloudLogMarker).catch(() => undefined);
+            return true;
+        } catch (error) {
+            if (launched) await window.vaporApi.requestStop(game.id).catch(() => undefined);
+            throw error;
+        }
+    }
+
+    async function syncProtectedMember(
+        pool: ProtectedPoolSummary,
+        game: GameStatus,
+        ordinal: number,
+        total: number,
+        alreadyOpen: boolean
+    ): Promise<void> {
+        let indexStaged = false;
+        let runningSession = alreadyOpen;
+        const globalProgress = (localPercent: number | null, message: string, base?: CloudTransferProgress): CloudTransferProgress => {
+            const normalizedLocal = localPercent === null ? 0 : Math.max(0, Math.min(100, localPercent));
+            const percent = Math.max(0, Math.min(100, ((ordinal - 1) + normalizedLocal / 100) / total * 100));
+            return {
+                state: base?.state ?? 'evaluating',
+                direction: base?.direction ?? 'unknown',
+                percent,
+                transferredBytes: base?.transferredBytes ?? 0,
+                totalBytes: base?.totalBytes ?? null,
+                completedFiles: base?.completedFiles ?? 0,
+                totalFiles: base?.totalFiles ?? null,
+                receivedParts: base?.receivedParts,
+                completedParts: base?.completedParts,
+                totalParts: base?.totalParts,
+                currentFileIndex: base?.currentFileIndex,
+                currentFileReceivedParts: base?.currentFileReceivedParts,
+                currentFileCompletedParts: base?.currentFileCompletedParts,
+                currentFileTotalParts: base?.currentFileTotalParts,
+                cachedPartsUsed: base?.cachedPartsUsed,
+                idleSeconds: base?.idleSeconds,
+                speedBytesPerSecond: base?.speedBytesPerSecond ?? null,
+                etaSeconds: base?.etaSeconds ?? null,
+                currentFile: base?.currentFile ?? null,
+                message,
+                logPath: base?.logPath ?? null
+            };
+        };
+
+        try {
+            if (!alreadyOpen) {
+                setOperationDetail(`${game.name} · ${ordinal}/${total} · Restoring Steam Cloud…`);
+                setTransferProgress(globalProgress(0, `Opening ${game.name}…`));
+                const pullLog = await window.vaporApi.resetCloudLog();
+                await window.vaporApi.startBackgroundGuard(game.id);
+                const beforeLaunch = await window.vaporApi.getStatus();
+                setStatus(beforeLaunch);
+                const current = beforeLaunch.games.find((candidate) => candidate.id === game.id) || game;
+                if (!current.running) {
+                    await window.vaporApi.runGame(game.id);
+                    runningSession = true;
+                    await waitForRunning(game.id, true, pullLog.marker, 'down');
+                } else {
+                    runningSession = true;
+                }
+                setOperationDetail(`${game.name} · ${ordinal}/${total} · Preparing local Cloud…`);
+                await window.vaporApi.restoreSplitFiles(game.id);
+            }
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Writing protected data…`);
+            setTransferProgress(globalProgress(16, `Writing ${game.name}…`));
+            await window.vaporApi.deployProtectedPool(pool.id, game.id);
+
+            const logicalUsage = await window.vaporApi.getAuditUsage(game.id);
+            try {
+                await window.vaporApi.stageCloudIndex(game.id);
+                indexStaged = true;
+            } catch {
+                indexStaged = false;
+            }
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Preparing Steam Cloud…`);
+            setTransferProgress(globalProgress(28, `Preparing ${game.name}…`));
+            await window.vaporApi.prepareSync(game.id);
+            await window.vaporApi.resetCloudLog();
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Closing app…`);
+            const stopped = await window.vaporApi.requestStop(game.id);
+            runningSession = false;
+            await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Uploading to Steam Cloud…`);
+            let syncFinished = false;
+            const syncPromise = window.vaporApi.waitForCloudSync(game.id, stopped.cloudLogMarker)
+                .finally(() => { syncFinished = true; });
+
+            while (!syncFinished) {
+                const progress = await window.vaporApi.getCloudProgress(game.id, stopped.cloudLogMarker, 'up').catch(() => null);
+                if (progress) {
+                    const message = `${game.name} · ${ordinal}/${total} · ${progress.message}`;
+                    setTransferProgress(globalProgress(progress.percent, message, progress));
+                    setOperationDetail(message);
+                }
+                if (!syncFinished) await sleep(450);
+            }
+
+            const syncResult = await syncPromise;
+            if (syncResult.state !== 'complete') throw new Error(`${game.name}: ${syncResult.message}`);
+            await window.vaporApi.pruneEmptyDirectories(game.id).catch(() => ({ removed: 0 }));
+            await window.vaporApi.rememberUsage(game.id, logicalUsage.bytes, logicalUsage.files);
+            if (indexStaged) await window.vaporApi.commitCloudIndex(game.id).catch(() => 0);
+            setTransferProgress(globalProgress(100, `${game.name} synchronized.`));
+        } catch (error) {
+            if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
+            if (runningSession) await window.vaporApi.requestStop(game.id).catch(() => undefined);
+            throw error;
+        }
+    }
+
+    async function syncProtectedDeletionMember(
+        deletions: PendingProtectedDeletion[],
+        game: GameStatus,
+        ordinal: number,
+        total: number,
+        alreadyOpen: boolean
+    ): Promise<void> {
+        let indexStaged = false;
+        let runningSession = alreadyOpen;
+        const applicable = deletions.filter((item) => item.memberGameIds.includes(game.id));
+        if (applicable.length === 0) return;
+
+        const globalProgress = (localPercent: number | null, message: string, base?: CloudTransferProgress): CloudTransferProgress => {
+            const normalizedLocal = localPercent === null ? 0 : Math.max(0, Math.min(100, localPercent));
+            const percent = Math.max(0, Math.min(100, ((ordinal - 1) + normalizedLocal / 100) / total * 100));
+            return {
+                state: base?.state ?? 'evaluating',
+                direction: base?.direction ?? 'unknown',
+                percent,
+                transferredBytes: base?.transferredBytes ?? 0,
+                totalBytes: base?.totalBytes ?? null,
+                completedFiles: base?.completedFiles ?? 0,
+                totalFiles: base?.totalFiles ?? null,
+                receivedParts: base?.receivedParts,
+                completedParts: base?.completedParts,
+                totalParts: base?.totalParts,
+                currentFileIndex: base?.currentFileIndex,
+                currentFileReceivedParts: base?.currentFileReceivedParts,
+                currentFileCompletedParts: base?.currentFileCompletedParts,
+                currentFileTotalParts: base?.currentFileTotalParts,
+                cachedPartsUsed: base?.cachedPartsUsed,
+                idleSeconds: base?.idleSeconds,
+                speedBytesPerSecond: base?.speedBytesPerSecond ?? null,
+                etaSeconds: base?.etaSeconds ?? null,
+                currentFile: base?.currentFile ?? null,
+                message,
+                logPath: base?.logPath ?? null
+            };
+        };
+
+        try {
+            if (!alreadyOpen) {
+                setOperationDetail(`${game.name} · ${ordinal}/${total} · Restoring Steam Cloud…`);
+                setTransferProgress(globalProgress(0, `Opening ${game.name}…`));
+                const pullLog = await window.vaporApi.resetCloudLog();
+                await window.vaporApi.startBackgroundGuard(game.id);
+                const beforeLaunch = await window.vaporApi.getStatus();
+                setStatus(beforeLaunch);
+                const current = beforeLaunch.games.find((candidate) => candidate.id === game.id) || game;
+                if (!current.running) {
+                    await window.vaporApi.runGame(game.id);
+                    runningSession = true;
+                    await waitForRunning(game.id, true, pullLog.marker, 'down');
+                } else {
+                    runningSession = true;
+                }
+                setOperationDetail(`${game.name} · ${ordinal}/${total} · Preparing local Cloud…`);
+                await window.vaporApi.restoreSplitFiles(game.id);
+            }
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Applying queued deletions…`);
+            setTransferProgress(globalProgress(16, `Updating ${game.name}…`));
+            for (const deletion of applicable) {
+                await window.vaporApi.deleteProtectedEntry(deletion.poolId, game.id, deletion.logicalPath);
+            }
+
+            const logicalUsage = await window.vaporApi.getAuditUsage(game.id);
+            try {
+                await window.vaporApi.stageCloudIndex(game.id);
+                indexStaged = true;
+            } catch {
+                indexStaged = false;
+            }
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Preparing Steam Cloud…`);
+            setTransferProgress(globalProgress(28, `Preparing ${game.name}…`));
+            await window.vaporApi.prepareSync(game.id);
+            await window.vaporApi.resetCloudLog();
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Closing app…`);
+            const stopped = await window.vaporApi.requestStop(game.id);
+            runningSession = false;
+            await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
+
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Updating Steam Cloud…`);
+            let syncFinished = false;
+            const syncPromise = window.vaporApi.waitForCloudSync(game.id, stopped.cloudLogMarker)
+                .finally(() => { syncFinished = true; });
+
+            while (!syncFinished) {
+                const progress = await window.vaporApi.getCloudProgress(game.id, stopped.cloudLogMarker, 'up').catch(() => null);
+                if (progress) {
+                    const message = `${game.name} · ${ordinal}/${total} · ${progress.message}`;
+                    setTransferProgress(globalProgress(progress.percent, message, progress));
+                    setOperationDetail(message);
+                }
+                if (!syncFinished) await sleep(450);
+            }
+
+            const syncResult = await syncPromise;
+            if (syncResult.state !== 'complete') throw new Error(`${game.name}: ${syncResult.message}`);
+            await window.vaporApi.pruneEmptyDirectories(game.id).catch(() => ({ removed: 0 }));
+            await window.vaporApi.rememberUsage(game.id, logicalUsage.bytes, logicalUsage.files);
+            if (indexStaged) await window.vaporApi.commitCloudIndex(game.id).catch(() => 0);
+            setTransferProgress(globalProgress(100, `${game.name} synchronized.`));
+        } catch (error) {
+            if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
+            if (runningSession) await window.vaporApi.requestStop(game.id).catch(() => undefined);
+            throw error;
+        }
+    }
+
+    async function syncPendingProtectedDeletions(
+        origin: GameStatus,
+        deletions: PendingProtectedDeletion[],
+        options: { originAlreadyOpen?: boolean } = {}
+    ): Promise<boolean> {
+        if (deletions.length === 0) return false;
+        const uniqueDeletions = [...new Map(deletions.map((item) => [`${item.poolId}:${normalizeRelative(item.logicalPath)}`, item])).values()];
+        const affectedPoolIds = [...new Set(uniqueDeletions.map((item) => item.poolId))];
+        let operationStarted = false;
+
+        try {
+            const latest = await window.vaporApi.getStatus();
+            setStatus(latest);
+            if (!latest.steamRunning) throw new Error('Steam is not running.');
+
+            const orderedMemberIds = [
+                origin.id,
+                ...[...new Set(uniqueDeletions.flatMap((item) => item.memberGameIds))].filter((id) => id !== origin.id)
+            ];
+            const memberGames = orderedMemberIds.map((id) => {
+                const game = latest.games.find((candidate) => candidate.id === id);
+                if (!game) throw new Error('A protected Cloud is no longer available.');
+                if (!game.platformSupported) throw new Error(`${game.name} is not supported on this platform.`);
+                if (!game.installed) throw new Error(`${game.name} must be installed before protected changes can be synchronized.`);
+                if (!game.cloudRoot) throw new Error(`${game.name} must be opened and synchronized once before protected changes can be synchronized.`);
+                if (game.id !== origin.id && game.running) throw new Error(`Close ${game.name} before synchronizing protected changes.`);
+                return game;
+            });
+
+            setModal(null);
+            operationStarted = true;
+            setSelected(null);
+            setSyncNotice(null);
+            setSessionDirty(false);
+            setPhase('saving');
+            setOperationDetail('Preparing protected changes…');
+            setTransferProgress({
+                state: 'evaluating',
+                direction: 'unknown',
+                percent: 0,
+                transferredBytes: 0,
+                totalBytes: null,
+                completedFiles: 0,
+                totalFiles: uniqueDeletions.length,
+                speedBytesPerSecond: null,
+                etaSeconds: null,
+                currentFile: null,
+                message: 'Synchronizing queued protected changes…',
+                logPath: null
+            });
+
+            for (let index = 0; index < memberGames.length; index += 1) {
+                await syncProtectedDeletionMember(
+                    uniqueDeletions,
+                    memberGames[index],
+                    index + 1,
+                    memberGames.length,
+                    index === 0 && options.originAlreadyOpen !== false
+                );
+            }
+
+            for (const deletion of uniqueDeletions) {
+                await window.vaporApi.finalizeProtectedDelete(deletion.poolId, deletion.logicalPath);
+            }
+            setOperationDetail('Protected changes synchronized.');
+            setTransferProgress((current) => current ? { ...current, state: 'complete', percent: 100, message: 'Protected changes synchronized.' } : current);
+            setPhase('saved');
+            await sleep(900);
+            closeCloudSession();
+            await refresh();
+            return true;
+        } catch (error) {
+            if (operationStarted) {
+                for (const poolId of affectedPoolIds) {
+                    await window.vaporApi.markProtectedPoolDegraded(poolId).catch(() => false);
+                }
+                closeCloudSession();
+                await refresh().catch(() => undefined);
+            }
+            setModal({
+                kind: 'message',
+                title: 'Protected synchronization interrupted',
+                body: error instanceof Error ? error.message : String(error)
+            });
+            return false;
+        }
+    }
+
+    async function confirmProtectedDelete(origin: GameStatus, entry: AuditEntry): Promise<void> {
+        const protection = entry.protection;
+        if (!protection) return;
+        try {
+            await window.vaporApi.stageProtectedDelete(protection.poolId, entry.path);
+            setModal(null);
+            setSelected(null);
+            setSessionDirty(true);
+            setSyncNotice(null);
+            await refresh();
+            await reloadDirectory(origin.id, parentDirectory(entry.path));
+        } catch (error) {
+            setModal({
+                kind: 'message',
+                title: 'Unable to queue deletion',
+                body: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+
+    async function confirmProtectedImport(
+        mode: 'mirror' | 'reed-solomon',
+        origin: GameStatus,
+        memberIds: GameId[],
+        directory: string,
+        files: ImportSelection[]
+    ): Promise<void> {
+        let pool: ProtectedPoolSummary | null = null;
+        try {
+            const orderedMemberIds = [origin.id, ...memberIds.filter((id) => id !== origin.id)];
+            setSelected(null);
+            setSyncNotice(null);
+            setSessionDirty(false);
+            setPhase('saving');
+            setOperationDetail(mode === 'mirror' ? 'Preparing mirrored files…' : 'Generating Reed–Solomon shards…');
+            setTransferProgress({
+                state: 'evaluating',
+                direction: 'unknown',
+                percent: 0,
+                transferredBytes: 0,
+                totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+                completedFiles: 0,
+                totalFiles: files.length,
+                speedBytesPerSecond: null,
+                etaSeconds: null,
+                currentFile: null,
+                message: mode === 'mirror' ? 'Preparing Mirror pool…' : 'Preparing Reed–Solomon pool…',
+                logPath: null
+            });
+
+            pool = await window.vaporApi.createProtectedPool(mode, origin.id, orderedMemberIds, directory, files);
+            const latest = await window.vaporApi.getStatus();
+            setStatus(latest);
+            const memberGames = orderedMemberIds.map((id) => {
+                const game = latest.games.find((candidate) => candidate.id === id);
+                if (!game) throw new Error('A selected Cloud is no longer available.');
+                return game;
+            });
+
+            for (let index = 0; index < memberGames.length; index += 1) {
+                await syncProtectedMember(pool, memberGames[index], index + 1, memberGames.length, index === 0);
+            }
+
+            await window.vaporApi.finalizeProtectedPool(pool.id);
+            setOperationDetail(mode === 'mirror' ? 'Mirror synchronized.' : 'Reed–Solomon pool synchronized.');
+            setTransferProgress((current) => current ? { ...current, state: 'complete', percent: 100, message: 'Protected storage synchronized.' } : current);
+            setPhase('saved');
+            await sleep(950);
+            closeCloudSession();
+            await refresh();
+        } catch (error) {
+            if (pool) await window.vaporApi.markProtectedPoolDegraded(pool.id).catch(() => false);
+            closeCloudSession();
+            await refresh().catch(() => undefined);
+            setModal({
+                kind: 'message',
+                title: 'Protected import interrupted',
+                body: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+
+    async function syncRepairMutation(
+        game: GameStatus,
+        ordinal: number,
+        total: number,
+        mutate: () => Promise<unknown>
+    ): Promise<void> {
+        let runningSession = false;
+        const globalPercent = (local: number) => Math.max(0, Math.min(100, ((ordinal - 1) + local / 100) / total * 100));
+        try {
+            const before = await window.vaporApi.getStatus();
+            setStatus(before);
+            const current = before.games.find((item) => item.id === game.id) || game;
+            if (!current.running) {
+                setOperationDetail(`${game.name} · ${ordinal}/${total} · Opening Cloud…`);
+                const pull = await window.vaporApi.resetCloudLog();
+                await window.vaporApi.startBackgroundGuard(game.id);
+                await window.vaporApi.runGame(game.id);
+                const launched = await waitForProbeState(game.id, true);
+                if (!launched) throw new Error(`${game.name} is no longer launchable through Steam.`);
+                runningSession = true;
+                await waitForRunning(game.id, true, pull.marker, 'down');
+            } else {
+                runningSession = true;
+            }
+
+            await window.vaporApi.restoreSplitFiles(game.id).catch(() => undefined);
+            setTransferProgress({
+                state: 'evaluating', direction: 'unknown', percent: globalPercent(35), transferredBytes: 0,
+                totalBytes: null, completedFiles: 0, totalFiles: null, speedBytesPerSecond: null,
+                etaSeconds: null, currentFile: null, message: `${game.name} · Repairing…`, logPath: null
+            });
+            await mutate();
+            const usage = await window.vaporApi.getAuditUsage(game.id);
+            await window.vaporApi.prepareSync(game.id);
+            await window.vaporApi.resetCloudLog();
+            setOperationDetail(`${game.name} · ${ordinal}/${total} · Synchronizing repair…`);
+            const stopped = await window.vaporApi.requestStop(game.id);
+            runningSession = false;
+            await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
+            const result = await window.vaporApi.waitForCloudSync(game.id, stopped.cloudLogMarker);
+            if (result.state !== 'complete') throw new Error(`${game.name}: ${result.message}`);
+            await window.vaporApi.pruneEmptyDirectories(game.id).catch(() => ({ removed: 0 }));
+            await window.vaporApi.rememberUsage(game.id, usage.bytes, usage.files);
+            await window.vaporApi.rebuildCloudIndex(game.id).catch(() => 0);
+            setTransferProgress((currentProgress) => currentProgress ? { ...currentProgress, state: 'complete', percent: globalPercent(100), message: `${game.name} repaired.` } : currentProgress);
+        } catch (error) {
+            if (runningSession) await window.vaporApi.requestStop(game.id).catch(() => undefined);
+            throw error;
+        }
+    }
+
+    async function confirmProtectedRepair(
+        repairModal: Extract<ModalState, { kind: 'repair' }>,
+        choice: 'replacement' | 'gather',
+        destinationId: GameId
+    ): Promise<void> {
+        try {
+            setSelected(null);
+            setSyncNotice(null);
+            if (!repairModal.targetWorked) setActiveGameId(destinationId);
+            setPhase('saving');
+            setOperationDetail('Preparing protected repair…');
+            setTransferProgress({
+                state: 'rebuilding', direction: 'unknown', percent: 0, transferredBytes: 0,
+                totalBytes: repairModal.issue.totalBytes, completedFiles: 0, totalFiles: repairModal.issue.fileCount,
+                speedBytesPerSecond: null, etaSeconds: null, currentFile: null,
+                message: 'Recovering protected files…', logPath: null
+            });
+
+            if (choice === 'replacement') {
+                if (repairModal.issue.corruptGameIds.length !== 1) {
+                    throw new Error('Replacement can repair one unavailable Cloud at a time.');
+                }
+                const corruptId = repairModal.issue.corruptGameIds[0];
+                const pools = await window.vaporApi.prepareProtectedReplacement(repairModal.game.id, corruptId, destinationId);
+                const latest = await window.vaporApi.getStatus();
+                setStatus(latest);
+                for (const pool of pools) {
+                    const orderedIds = [...pool.memberGameIds].sort((left, right) => {
+                        if (left === repairModal.game.id) return 1;
+                        if (right === repairModal.game.id) return -1;
+                        return 0;
+                    });
+                    for (let index = 0; index < orderedIds.length; index += 1) {
+                        const member = latest.games.find((candidate) => candidate.id === orderedIds[index]);
+                        if (!member) throw new Error('A repair Cloud is no longer available.');
+                        const currentStatus = await window.vaporApi.getStatus();
+                        const current = currentStatus.games.find((candidate) => candidate.id === member.id) || member;
+                        await syncProtectedMember(pool, current, index + 1, orderedIds.length, current.running);
+                    }
+                    await window.vaporApi.finalizeProtectedPool(pool.id);
+                }
+            } else {
+                const plan = await window.vaporApi.prepareProtectedGather(repairModal.game.id, destinationId);
+                const latest = await window.vaporApi.getStatus();
+                setStatus(latest);
+                const corrupt = new Set(repairModal.issue.corruptGameIds);
+                const operationIds = [...new Set([...plan.sourceGameIds.filter((id) => !corrupt.has(id)), destinationId])]
+                    .sort((left, right) => {
+                        if (left === repairModal.game.id) return 1;
+                        if (right === repairModal.game.id) return -1;
+                        return 0;
+                    });
+                for (let index = 0; index < operationIds.length; index += 1) {
+                    const id = operationIds[index];
+                    const member = latest.games.find((candidate) => candidate.id === id);
+                    if (!member) throw new Error('A repair Cloud is no longer available.');
+                    await syncRepairMutation(member, index + 1, operationIds.length, async () => {
+                        if (plan.sourceGameIds.includes(id)) await window.vaporApi.cleanupProtectedGather(plan.id, id);
+                        if (id === destinationId) await window.vaporApi.applyProtectedGather(plan.id, id);
+                    });
+                }
+                await window.vaporApi.finalizeProtectedGather(plan.id);
+            }
+
+            setTransferProgress((current) => current ? { ...current, state: 'complete', percent: 100, message: 'Repair complete.' } : current);
+            setOperationDetail('Repair complete.');
+            await sleep(650);
+            closeCloudSession();
+            const refreshed = await refresh();
+            if (repairModal.targetWorked) {
+                const targetGame = refreshed.games.find((item) => item.id === repairModal.game.id) || repairModal.game;
+                await confirmOpen(targetGame, repairModal.target, { skipProtectedProbe: true });
+            }
+        } catch (error) {
+            closeCloudSession();
+            await refresh().catch(() => undefined);
+            setModal({
+                kind: 'message',
+                title: 'Repair interrupted',
+                body: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+
+    async function confirmOpen(game: GameStatus, target?: CloudSearchEntry, options: { skipProtectedProbe?: boolean } = {}) {
         let backgroundSessionStarted = false;
         try {
             setModal(null);
@@ -2309,9 +3490,24 @@ export default function App() {
 
             setTransferProgress(null);
             if (!openingStatus.steamRunning) {
-                setOperationDetail('Starting Steam…');
-                await window.vaporApi.runSteam();
-                openingStatus = await waitForSteamRunning(true);
+                throw new Error('Steam is not running. Start Steam before opening a Cloud.');
+            }
+
+            const protectedMemberIds = options.skipProtectedProbe ? [] : await window.vaporApi.getProtectedRepairMembers(game.id).catch(() => [] as GameId[]);
+            if (protectedMemberIds.length > 0) {
+                const otherMembers = protectedMemberIds.filter((id) => id !== game.id);
+                for (let index = 0; index < otherMembers.length; index += 1) {
+                    const memberId = otherMembers[index];
+                    const member = openingStatus.games.find((item) => item.id === memberId);
+                    if (!member) {
+                        await window.vaporApi.markProtectedGameInaccessible(memberId).catch(() => 0);
+                        continue;
+                    }
+                    setOperationDetail(`Checking protected Cloud ${index + 1}/${otherMembers.length} · ${member.name}…`);
+                    await probeProtectedMember(member);
+                    openingStatus = await window.vaporApi.getStatus();
+                    setStatus(openingStatus);
+                }
             }
 
             setOperationDetail('Preparing Steam Cloud session…');
@@ -2324,11 +3520,38 @@ export default function App() {
             let synced = currentGame;
             if (!currentGame.running) {
                 await window.vaporApi.runGame(game.id);
+                const launched = await waitForProbeState(game.id, true);
+                if (!launched) {
+                    await window.vaporApi.stopBackgroundGuard(game.id).catch(() => false);
+                    backgroundSessionStarted = false;
+                    if (protectedMemberIds.includes(game.id)) {
+                        await window.vaporApi.markProtectedGameInaccessible(game.id).catch(() => 0);
+                        const issue = await window.vaporApi.getProtectedRepairIssue(game.id).catch(() => null);
+                        setOperationDetail(null);
+                        setTransferProgress(null);
+                        setPhase('closed');
+                        setActiveGameId(null);
+                        const repairedStatus = await refresh().catch(() => openingStatus);
+                        if (issue) {
+                            const repairGame = repairedStatus.games.find((item) => item.id === game.id) || game;
+                            setModal({ kind: 'repair', game: repairGame, issue, targetWorked: false, target });
+                        } else {
+                            setModal({ kind: 'message', title: 'Unable to open cloud', body: 'Steam could not launch this protected Cloud.' });
+                        }
+                        return;
+                    }
+                    throw new Error(`Steam could not successfully launch ${game.name}.`);
+                }
+                if (protectedMemberIds.includes(game.id)) {
+                    await window.vaporApi.markProtectedGameAccessible(game.id).catch(() => 0);
+                }
                 synced = await waitForRunning(game.id, true, pullLog.marker, 'down');
                 const finalPull = await window.vaporApi.getCloudProgress(game.id, pullLog.marker, 'down').catch(() => null);
                 if (finalPull) setTransferProgress(finalPull);
 
                 await sleep(500);
+            } else if (protectedMemberIds.includes(game.id)) {
+                await window.vaporApi.markProtectedGameAccessible(game.id).catch(() => 0);
             }
 
             setOperationDetail('Rebuilding split files…');
@@ -2408,6 +3631,10 @@ export default function App() {
             }
 
             setOperationDetail('Preparing cloud…');
+            // A previously unavailable Cloud may still contain shards from a
+            // protected pool that was dissolved with “Gather in one place”.
+            // Retired Pool IDs make this cleanup safe and repeatable.
+            const retiredCleanup = await window.vaporApi.cleanupRetiredProtectedPools(game.id).catch(() => ({ removed: 0 }));
             const restoredStatus = await window.vaporApi.getStatus();
             setStatus(restoredStatus);
             const restoredGame = restoredStatus.games.find((item) => item.id === game.id) || synced;
@@ -2446,10 +3673,35 @@ export default function App() {
             } else {
                 await reloadDirectory(game.id, '');
             }
-            await sleep(320);
+            const pendingProtectedDeletions = await window.vaporApi.getPendingProtectedDeletions(game.id).catch(() => []);
+            setSessionDirty(pendingProtectedDeletions.length > 0 || retiredCleanup.removed > 0);
+
+            // Do not expose the Cloud explorer if the app only appeared
+            // briefly and then exited/crashed during Cloud preparation.
+            setOperationDetail('Confirming the game is still running…');
+            const stillRunning = await waitForProbeState(game.id, true, 6_000, 1_500);
+            if (!stillRunning) {
+                if (protectedMemberIds.includes(game.id)) {
+                    await window.vaporApi.markProtectedGameInaccessible(game.id).catch(() => 0);
+                }
+                throw new Error(`${game.name} stopped before the Cloud could be opened.`);
+            }
+
+            await sleep(180);
+            sessionCloudLogMarkerRef.current = await window.vaporApi.getCloudLogMarker().catch(() => null);
+            externalGameCloseMisses.current = 0;
             setOperationDetail(null);
             setTransferProgress(null);
             setPhase('open');
+            if (protectedMemberIds.length > 0) {
+                const issue = await window.vaporApi.getProtectedRepairIssue(game.id).catch(() => null);
+                if (issue) {
+                    const latestRepairStatus = await window.vaporApi.getStatus().catch(() => restoredStatus);
+                    setStatus(latestRepairStatus);
+                    const repairGame = latestRepairStatus.games.find((item) => item.id === game.id) || restoredGame;
+                    setModal({ kind: 'repair', game: repairGame, issue, targetWorked: true, target });
+                }
+            }
         } catch (error) {
             try {
                 if (backgroundSessionStarted) await window.vaporApi.requestStop(game.id);
@@ -2487,6 +3739,8 @@ export default function App() {
     }
 
     function closeCloudSession() {
+        sessionCloudLogMarkerRef.current = null;
+        externalGameCloseMisses.current = 0;
         setActiveGameId(null);
         setSyncNotice(null);
         setOperationDetail(null);
@@ -2573,7 +3827,7 @@ export default function App() {
 
     async function synchronize(
         game: GameStatus,
-        options: { skipEmptyFoldersWarning?: boolean } = {}
+        options: { skipEmptyFoldersWarning?: boolean; externallyClosed?: boolean } = {}
     ): Promise<boolean> {
         if (!options.skipEmptyFoldersWarning) {
             const summary = await window.vaporApi.getCloudContentSummary(game.id).catch(() => null);
@@ -2581,6 +3835,13 @@ export default function App() {
                 setModal({ kind: 'empty-folders-sync', game });
                 return false;
             }
+        }
+
+        const pendingProtectedDeletions = await window.vaporApi.getPendingProtectedDeletions(game.id).catch(() => []);
+        if (pendingProtectedDeletions.length > 0) {
+            return syncPendingProtectedDeletions(game, pendingProtectedDeletions, {
+                originAlreadyOpen: !options.externallyClosed
+            });
         }
 
         let stopStarted = false;
@@ -2602,60 +3863,106 @@ export default function App() {
                 indexStaged = false;
             }
 
-            const preparation = await window.vaporApi.prepareSync(game.id);
-            if (preparation.splitFiles > 0 && preparation.reusedParts > 0) {
-                setOperationDetail(
-                    `Chunks ready · ${preparation.reusedParts} unchanged reused · ${preparation.rewrittenParts} changed`
-                );
-                await sleep(220);
-            }
-            setOperationDetail('Closing the game…');
+            const waitForUpload = async (marker: number) => {
+                let syncFinished = false;
+                const syncPromise = window.vaporApi.waitForCloudSync(game.id, marker)
+                    .finally(() => { syncFinished = true; });
 
-            const beforeStop = await window.vaporApi.getStatus();
-            setStatus(beforeStop);
-            const current = beforeStop.games.find((item) => item.id === game.id) || game;
-            if (!current.running) {
-                throw new Error('The Steam session closed before VaporStow could start synchronization.');
-            }
+                while (!syncFinished) {
+                    const progress = await window.vaporApi.getCloudProgress(game.id, marker, 'up').catch(() => null);
+                    if (progress) {
+                        setTransferProgress(progress);
+                        setOperationDetail(progress.message);
+                    }
+                    if (!syncFinished) await sleep(500);
+                }
+
+                const result = await syncPromise;
+                const finalProgress = await window.vaporApi.getCloudProgress(game.id, marker, 'up').catch(() => null);
+                if (finalProgress) {
+                    setTransferProgress(finalProgress.state === 'complete' ? { ...finalProgress, percent: 100 } : finalProgress);
+                    setOperationDetail(finalProgress.state === 'complete' ? 'Steam Cloud synchronized.' : finalProgress.message);
+                }
+                return result;
+            };
 
             let syncResult: Awaited<ReturnType<typeof window.vaporApi.waitForCloudSync>> | null = null;
 
-            setOperationDetail('Preparing Steam Cloud upload…');
-            await window.vaporApi.resetCloudLog();
-
-            stopStarted = true;
-            const stopped = await window.vaporApi.requestStop(game.id);
-            await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
-            setOperationDetail('Waiting for Steam Cloud…');
-
-            let syncFinished = false;
-            const syncPromise = window.vaporApi.waitForCloudSync(game.id, stopped.cloudLogMarker)
-                .finally(() => { syncFinished = true; });
-
-            while (!syncFinished) {
-                const progress = await window.vaporApi.getCloudProgress(game.id, stopped.cloudLogMarker, 'up').catch(() => null);
-                if (progress) {
-                    setTransferProgress(progress);
-                    setOperationDetail(progress.message);
+            if (options.externallyClosed) {
+                // The game has already exited outside VaporStow. Stop the window guard,
+                // convert the logical workspace back to its Steam-safe representation,
+                // then follow the post-exit Steam Cloud upload instead of leaving the
+                // explorer open against a Cloud that is no longer controllable.
+                await window.vaporApi.stopBackgroundGuard(game.id).catch(() => false);
+                setOperationDetail('Game closed. Preparing files for Steam Cloud…');
+                const preparation = await window.vaporApi.prepareSyncOffline(game.id);
+                if (preparation.splitFiles > 0 && preparation.reusedParts > 0) {
+                    setOperationDetail(
+                        `Chunks ready · ${preparation.reusedParts} unchanged reused · ${preparation.rewrittenParts} changed`
+                    );
+                    await sleep(220);
                 }
-                if (!syncFinished) await sleep(500);
+
+                const externalMarker = sessionCloudLogMarkerRef.current
+                    ?? await window.vaporApi.getCloudLogMarker().catch(() => 0);
+                setOperationDetail('Game closed. Waiting for Steam Cloud…');
+                syncResult = await waitForUpload(externalMarker);
+
+                // Carrier storage and split-file representation can be prepared only
+                // after the unexpected exit was noticed. Run one hidden verification
+                // cycle so Steam is guaranteed to see the final prepared representation.
+                const needsVerificationCycle = game.storageMode === 'carrier' || preparation.splitFiles > 0;
+                if (needsVerificationCycle || syncResult.state !== 'complete') {
+                    setOperationDetail('Finalizing automatic synchronization…');
+                    const pullLog = await window.vaporApi.resetCloudLog();
+                    await window.vaporApi.startBackgroundGuard(game.id);
+                    await window.vaporApi.runGame(game.id);
+                    const relaunched = await waitForProbeState(game.id, true, 120_000, 2_500);
+                    if (!relaunched) throw new Error(`${game.name} could not be reopened to finish automatic synchronization.`);
+                    await waitForRunning(game.id, true, pullLog.marker, 'down');
+                    await window.vaporApi.prepareSync(game.id);
+                    await window.vaporApi.resetCloudLog();
+                    stopStarted = true;
+                    const stopped = await window.vaporApi.requestStop(game.id);
+                    await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
+                    setOperationDetail('Waiting for Steam Cloud…');
+                    syncResult = await waitForUpload(stopped.cloudLogMarker);
+                }
+            } else {
+                const preparation = await window.vaporApi.prepareSync(game.id);
+                if (preparation.splitFiles > 0 && preparation.reusedParts > 0) {
+                    setOperationDetail(
+                        `Chunks ready · ${preparation.reusedParts} unchanged reused · ${preparation.rewrittenParts} changed`
+                    );
+                    await sleep(220);
+                }
+                setOperationDetail('Closing the game…');
+
+                const beforeStop = await window.vaporApi.getStatus();
+                setStatus(beforeStop);
+                const current = beforeStop.games.find((item) => item.id === game.id) || game;
+                if (!current.running) {
+                    throw new Error('The Steam session closed before VaporStow could start synchronization.');
+                }
+
+                setOperationDetail('Preparing Steam Cloud upload…');
+                await window.vaporApi.resetCloudLog();
+
+                stopStarted = true;
+                const stopped = await window.vaporApi.requestStop(game.id);
+                await waitForRunning(game.id, false, stopped.cloudLogMarker, 'up');
+                setOperationDetail('Waiting for Steam Cloud…');
+                syncResult = await waitForUpload(stopped.cloudLogMarker);
             }
 
-            syncResult = await syncPromise;
-            const finalProgress = await window.vaporApi.getCloudProgress(game.id, stopped.cloudLogMarker, 'up').catch(() => null);
-            if (finalProgress) {
-                setTransferProgress(finalProgress.state === 'complete' ? { ...finalProgress, percent: 100 } : finalProgress);
-                setOperationDetail(finalProgress.state === 'complete' ? 'Steam Cloud synchronized.' : finalProgress.message);
-            }
-
-            if (syncResult.state !== 'complete') {
+            if (!syncResult || syncResult.state !== 'complete') {
                 if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
                 closeCloudSession();
                 await refresh();
                 setModal({
                     kind: 'message',
-                    title: syncResult.state === 'failed' ? 'Steam Cloud sync failed' : 'Steam Cloud status unknown',
-                    body: syncResult.message
+                    title: syncResult?.state === 'failed' ? 'Steam Cloud sync failed' : 'Steam Cloud status unknown',
+                    body: syncResult?.message || 'Steam Cloud synchronization did not complete.'
                 });
                 return false;
             }
@@ -2679,7 +3986,11 @@ export default function App() {
         } catch (error) {
             if (indexStaged) await window.vaporApi.discardCloudIndex(game.id).catch(() => false);
 
-            if (!stopStarted) {
+            if (options.externallyClosed) {
+                await window.vaporApi.stopBackgroundGuard(game.id).catch(() => false);
+                closeCloudSession();
+                await refresh().catch(() => undefined);
+            } else if (!stopStarted) {
                 await restoreSplitFilesSafe(game.id);
 
                 try {
@@ -2723,6 +4034,66 @@ export default function App() {
         setSearchOpen(false);
         return synchronize(game, { skipEmptyFoldersWarning: true });
     };
+
+    useEffect(() => {
+        let probeBusy = false;
+        const timer = window.setInterval(() => {
+            const id = activeGameIdRef.current;
+            if (!id || phaseRef.current !== 'open') {
+                externalGameCloseMisses.current = 0;
+                return;
+            }
+            if (probeBusy || externalGameCloseHandling.current || automaticSessionActionRunning.current || windowCloseHandling.current) return;
+
+            probeBusy = true;
+            void window.vaporApi.isGameRunning(id)
+                .then((running) => {
+                    if (id !== activeGameIdRef.current || phaseRef.current !== 'open') {
+                        externalGameCloseMisses.current = 0;
+                        return;
+                    }
+                    if (running) {
+                        externalGameCloseMisses.current = 0;
+                        return;
+                    }
+
+                    externalGameCloseMisses.current += 1;
+                    if (externalGameCloseMisses.current < 3) return;
+                    externalGameCloseMisses.current = 0;
+
+                    const currentStatus = statusRef.current;
+                    const game = currentStatus?.games.find((candidate) => candidate.id === id);
+                    if (!game || externalGameCloseHandling.current) return;
+
+                    externalGameCloseHandling.current = true;
+                    automaticSessionActionRunning.current = true;
+                    setModal(null);
+                    setSearchOpen(false);
+                    setSelected(null);
+                    setOperationDetail('Game closed. Starting automatic synchronization…');
+                    setPhase('saving');
+
+                    void synchronize(game, {
+                        skipEmptyFoldersWarning: true,
+                        externallyClosed: true
+                    }).finally(() => {
+                        externalGameCloseHandling.current = false;
+                        automaticSessionActionRunning.current = false;
+                        externalGameCloseMisses.current = 0;
+                        lastActivityAt.current = Date.now();
+                    });
+                })
+                .catch(() => {
+                    // A failed process probe must never close an otherwise valid session.
+                    externalGameCloseMisses.current = 0;
+                })
+                .finally(() => {
+                    probeBusy = false;
+                });
+        }, 650);
+
+        return () => window.clearInterval(timer);
+    }, []);
 
     useEffect(() => {
         if (phase === 'open' && activeGameId) lastActivityAt.current = Date.now();
@@ -2828,8 +4199,13 @@ export default function App() {
                         </button>
                         <button
                             className="info"
-                            title="Information"
+                            title={modal?.kind === 'advanced-search'
+                                ? 'Unavailable while Advanced Search is open'
+                                : phase === 'opening' || phase === 'closing'
+                                    ? 'Unavailable while Cloud is opening or closing'
+                                    : 'Information'}
                             aria-label="Information"
+                            disabled={modal?.kind === 'advanced-search' || phase === 'opening' || phase === 'closing'}
                             onClick={() => setModal({ kind: 'info' })}
                         >
                             <InfoIcon />
@@ -2892,6 +4268,36 @@ export default function App() {
                                             </button>
                                         ))}
                                     </div>
+
+                                    <button
+                                        type="button"
+                                        className={`home-special-filter ${homeFilter === 'protected' ? 'active' : ''}`}
+                                        title="Protected Clouds"
+                                        aria-label="Show Clouds used by Mirror or Reed–Solomon"
+                                        aria-pressed={homeFilter === 'protected'}
+                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        onClick={() => {
+                                            setHomeFilter('protected');
+                                            if (modal?.kind === 'advanced-search') setModal(null);
+                                        }}
+                                    >
+                                        <ShieldIcon size={15} />
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        className={`home-special-filter ${homeFilter === 'hidden' ? 'active' : ''}`}
+                                        title="Hidden Clouds"
+                                        aria-label="Show hidden Clouds"
+                                        aria-pressed={homeFilter === 'hidden'}
+                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        onClick={() => {
+                                            setHomeFilter('hidden');
+                                            if (modal?.kind === 'advanced-search') setModal(null);
+                                        }}
+                                    >
+                                        <VisibilityIcon hidden size={15} />
+                                    </button>
 
                                     <button
                                         type="button"
@@ -2959,9 +4365,11 @@ export default function App() {
                             ) : homeCarouselGames.length > 0 ? (
                                 <CloudCarousel
                                     games={homeCarouselGames}
-                                    actionFor={(game) => !game.platformSupported
-                                        ? 'Store'
-                                        : game.installing
+                                    actionFor={(game) => game.protectedCorrupt
+                                        ? 'Repair'
+                                        : !game.platformSupported
+                                            ? 'Store'
+                                            : game.installing
                                             ? 'Installing…'
                                             : !game.installed && !game.inLibrary
                                                 ? 'Add to library'
@@ -2971,13 +4379,21 @@ export default function App() {
                                                         ? 'Unavailable'
                                                         : 'Open'}
                                     onAction={(game) => {
-                                        if (!game.platformSupported) void window.vaporApi.openStore(game.id);
+                                        if (game.protectedCorrupt) {
+                                            void window.vaporApi.getProtectedRepairIssue(game.id).then((issue) => {
+                                                if (issue) setModal({ kind: 'repair', game, issue, targetWorked: false });
+                                                else setModal({ kind: 'message', title: 'Repair unavailable', body: 'No degraded Mirror or Reed–Solomon pool was found for this Cloud.' });
+                                            });
+                                        } else if (!game.platformSupported) void window.vaporApi.openStore(game.id);
                                         else if (!game.installed && !game.inLibrary) void window.vaporApi.installGame(game.id);
                                         else if (!game.installed) setModal({ kind: 'install', game });
                                         else setModal({ kind: 'open', game });
                                     }}
                                     isFavorite={(id) => favoriteGameIds.has(id)}
                                     onToggleFavorite={toggleFavorite}
+                                    isHidden={(id) => hiddenGameIds.has(id) || Boolean(status?.games.find((game) => game.id === id)?.protectedCorrupt)}
+                                    onToggleHidden={toggleHidden}
+                                    steamRunning={status.steamRunning}
                                     operationGame={activeGame && phase !== 'open' ? activeGame : null}
                                     operationPhase={phase}
                                     operationDetail={operationDetail}
@@ -2985,7 +4401,7 @@ export default function App() {
                                 />
                             ) : (
                                 <div className="home-cloud-empty" role="status">
-                                    {homeFilter === 'favorites' ? <FavoriteIcon active size={22} /> : <SearchIcon size={22} />}
+                                    {homeFilter === 'favorites' ? <FavoriteIcon active size={22} /> : homeFilter === 'hidden' ? <VisibilityIcon hidden size={22} /> : homeFilter === 'protected' ? <ShieldIcon size={22} /> : <SearchIcon size={22} />}
                                     {homeEmptyMessage && <strong>{homeEmptyMessage}</strong>}
                                 </div>
                             )}
@@ -2999,6 +4415,7 @@ export default function App() {
                                 setSelected={setSelected}
                                 navigate={navigate}
                                 setModal={setModal}
+                                beginImport={beginImport}
                                 synchronize={synchronize}
                                 syncNotice={syncNotice}
                                 navDirection={navDirection}
@@ -3059,6 +4476,11 @@ export default function App() {
                 }}
                 setAdvancedSearchRunning={setAdvancedSearchRunning}
                 applyStatus={setStatus}
+                steamRunning={status?.steamRunning ?? false}
+                games={status?.games ?? []}
+                confirmProtectedImport={confirmProtectedImport}
+                confirmProtectedDelete={confirmProtectedDelete}
+                confirmProtectedRepair={confirmProtectedRepair}
             />
         </>
     );

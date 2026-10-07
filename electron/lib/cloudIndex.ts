@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { GameDefinition, GameId } from '../games';
-import { auditRoot, SPLIT_STORAGE_FOLDER } from './cloudFs';
+import { auditRoot, PROTECTED_STORAGE_FOLDER, SPLIT_STORAGE_FOLDER } from './cloudFs';
 
 export type CloudIndexEntryType = 'file' | 'directory';
 
@@ -104,7 +104,9 @@ function parentPortablePath(relativePath: string): string {
 }
 
 function isInternalRootEntry(name: string): boolean {
-    return name === SPLIT_STORAGE_FOLDER || name.startsWith(`${SPLIT_STORAGE_FOLDER}.staging-`);
+    return name === SPLIT_STORAGE_FOLDER
+        || name.startsWith(`${SPLIT_STORAGE_FOLDER}.staging-`)
+        || name === PROTECTED_STORAGE_FOLDER;
 }
 
 export async function snapshotGame(game: GameDefinition, cloudRoot: string): Promise<CloudIndexSnapshot> {

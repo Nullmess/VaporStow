@@ -1,8 +1,61 @@
+export type ProtectionInfo = {
+    mode: 'mirror' | 'reed-solomon';
+    poolId: string;
+    memberGameIds: string[];
+    memberNames: string[];
+    state: 'pending' | 'healthy' | 'degraded';
+    dataShards?: number;
+    parityShards?: number;
+};
+
+export type ImportSelection = {
+    sourcePath: string;
+    relativePath: string;
+    name: string;
+    size: number;
+};
+
+export type PendingProtectedDeletion = {
+    poolId: string;
+    logicalPath: string;
+    memberGameIds: string[];
+};
+
+export type ProtectedRepairIssue = {
+    triggerGameId: string;
+    poolIds: string[];
+    corruptGameIds: string[];
+    memberGameIds: string[];
+    fileCount: number;
+    totalBytes: number;
+};
+
+export type GatherRepairPlan = {
+    id: string;
+    triggerGameId: string;
+    destinationGameId: string;
+    poolIds: string[];
+    sourceGameIds: string[];
+    fileCount: number;
+    totalBytes: number;
+};
+
+export type ProtectedPoolSummary = {
+    id: string;
+    mode: 'mirror' | 'reed-solomon';
+    memberGameIds: string[];
+    layout: { dataShards: number; parityShards: number } | null;
+    fileCount: number;
+    totalBytes: number;
+};
+
 export type AuditEntry = {
     path: string;
     name: string;
     type: 'file' | 'directory';
     size: number;
+    protection?: ProtectionInfo;
+    virtualProtected?: boolean;
 };
 
 export type DirectoryListing = {
@@ -20,6 +73,7 @@ export type CloudSearchEntry = {
     type: 'file' | 'directory';
     size: number;
     cachedAt: string;
+    protection?: ProtectionInfo;
 };
 
 export type GameStatus = {
@@ -55,6 +109,8 @@ export type GameStatus = {
     cloudFiles: number;
     rememberedBytes: number | null;
     rememberedFiles: number | null;
+    hasProtectedFiles: boolean;
+    protectedCorrupt: boolean;
     disk: { free: number; total: number } | null;
 };
 
@@ -194,6 +250,7 @@ export type VaporApi = {
         affected: number;
     }>;
     stopBackgroundGuard: (id: GameStatus['id']) => Promise<boolean>;
+    isGameRunning: (id: GameStatus['id']) => Promise<boolean>;
     requestStop: (id: GameStatus['id']) => Promise<StopResult>;
     getCloudLogMarker: () => Promise<number>;
     resetCloudLog: () => Promise<CloudLogReset>;
@@ -204,6 +261,7 @@ export type VaporApi = {
     ) => Promise<CloudTransferProgress>;
     waitForCloudSync: (id: GameStatus['id'], marker: number) => Promise<CloudSyncResult>;
     prepareSync: (id: GameStatus['id']) => Promise<PrepareSyncResult>;
+    prepareSyncOffline: (id: GameStatus['id']) => Promise<PrepareSyncResult>;
     getCloudContentSummary: (id: GameStatus['id']) => Promise<CloudContentSummary>;
     getAuditUsage: (id: GameStatus['id']) => Promise<{ bytes: number; files: number }>;
     pruneEmptyDirectories: (id: GameStatus['id']) => Promise<{ removed: number }>;
@@ -216,13 +274,36 @@ export type VaporApi = {
     commitCloudIndex: (id: GameStatus['id']) => Promise<number>;
     discardCloudIndex: (id: GameStatus['id']) => Promise<boolean>;
     listDirectory: (id: GameStatus['id'], relativeDirectory: string) => Promise<DirectoryListing>;
+    selectImportFiles: (id: GameStatus['id']) => Promise<{ canceled: boolean; files: ImportSelection[] }>;
+    describeImportPaths: (paths: string[]) => Promise<ImportSelection[]>;
+    importSelectedFiles: (id: GameStatus['id'], relativeDirectory: string, files: ImportSelection[]) => Promise<{ canceled: boolean; imported: number }>;
     importFiles: (id: GameStatus['id'], relativeDirectory: string) => Promise<{ canceled: boolean }>;
     importFolder: (id: GameStatus['id'], relativeDirectory: string) => Promise<{ canceled: boolean }>;
+    createProtectedPool: (mode: 'mirror' | 'reed-solomon', originId: GameStatus['id'], memberIds: GameStatus['id'][], relativeDirectory: string, files: ImportSelection[]) => Promise<ProtectedPoolSummary>;
+    deployProtectedPool: (poolId: string, id: GameStatus['id']) => Promise<{ files: number; bytes: number }>;
+    finalizeProtectedPool: (poolId: string) => Promise<{ id: string; state: 'pending' | 'healthy' | 'degraded' }>;
+    stageProtectedDelete: (poolId: string, logicalPath: string) => Promise<PendingProtectedDeletion>;
+    getPendingProtectedDeletions: (id: GameStatus['id']) => Promise<PendingProtectedDeletion[]>;
+    deleteProtectedEntry: (poolId: string, id: GameStatus['id'], logicalPath: string) => Promise<{ files: number; remainingFiles: number }>;
+    finalizeProtectedDelete: (poolId: string, logicalPath: string) => Promise<{ removedFiles: number; poolRemoved: boolean }>;
+    markProtectedPoolDegraded: (poolId: string) => Promise<boolean>;
+    getReedSolomonMembers: (id: GameStatus['id']) => Promise<GameStatus['id'][]>;
+    getProtectedRepairMembers: (id: GameStatus['id']) => Promise<GameStatus['id'][]>;
+    markProtectedGameInaccessible: (id: GameStatus['id']) => Promise<number>;
+    markProtectedGameAccessible: (id: GameStatus['id']) => Promise<number>;
+    getProtectedRepairIssue: (id: GameStatus['id']) => Promise<ProtectedRepairIssue | null>;
+    prepareProtectedReplacement: (triggerId: GameStatus['id'], corruptId: GameStatus['id'], replacementId: GameStatus['id']) => Promise<ProtectedPoolSummary[]>;
+    prepareProtectedGather: (triggerId: GameStatus['id'], destinationId: GameStatus['id']) => Promise<GatherRepairPlan>;
+    applyProtectedGather: (planId: string, id: GameStatus['id']) => Promise<{ files: number; bytes: number }>;
+    cleanupProtectedGather: (planId: string, id: GameStatus['id']) => Promise<number>;
+    finalizeProtectedGather: (planId: string) => Promise<boolean>;
+    cleanupRetiredProtectedPools: (id: GameStatus['id']) => Promise<{ removed: number }>;
     createFolder: (id: GameStatus['id'], relativeDirectory: string, name: string) => Promise<boolean>;
     deleteEntry: (id: GameStatus['id'], relativePath: string) => Promise<boolean>;
     openFolder: (id: GameStatus['id'], relativeDirectory: string) => Promise<boolean>;
     revealEntry: (id: GameStatus['id'], relativePath: string) => Promise<boolean>;
     getLogs: (id: GameStatus['id']) => Promise<string[]>;
+    onFilesDropped: (callback: (paths: string[]) => void) => () => void;
     toggleFullscreen: () => Promise<boolean>;
     isFullscreen: () => Promise<boolean>;
     requestWindowClose: () => void;

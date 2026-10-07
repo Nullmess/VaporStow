@@ -8,6 +8,7 @@ import { currentExternalCatalogGames, currentExternalCatalogStats, refreshExtern
 import * as cloudFs from './lib/cloudFs';
 import * as cloudIndex from './lib/cloudIndex';
 import * as carrierStorage from './lib/carrierStorage';
+import * as protectedPools from './lib/protectedPools';
 import * as steam from './lib/steam';
 
 let mainWindow: BrowserWindow | null = null;
@@ -164,6 +165,60 @@ async function getEnvironment() {
     const libraries = await steam.detectLibraries(steamRoot);
     const steamId64 = await steam.detectSteamId64(steamRoot);
     return { steamRoot, libraries, steamId64 };
+}
+
+
+async function describeImportPaths(inputPaths: string[]): Promise<protectedPools.ImportSelection[]> {
+    const output: protectedPools.ImportSelection[] = [];
+    const seen = new Set<string>();
+
+    const addFile = async (sourcePath: string, relativePath: string) => {
+        const stat = await fs.promises.stat(sourcePath);
+        if (!stat.isFile()) return;
+        const portable = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+        if (!portable || portable.split('/').some((part) => !part || part === '.' || part === '..')) return;
+        const key = process.platform === 'win32' ? portable.toLowerCase() : portable;
+        if (seen.has(key)) throw new Error(`Two dropped items target the same path: “${portable}”.`);
+        seen.add(key);
+        output.push({
+            sourcePath,
+            relativePath: portable,
+            name: path.basename(portable),
+            size: stat.size
+        });
+        if (output.length > 10_000) throw new Error('Import is limited to 10,000 files at once.');
+    };
+
+    const walk = async (absolute: string, relative: string): Promise<void> => {
+        const stat = await fs.promises.stat(absolute);
+        if (stat.isFile()) {
+            await addFile(absolute, relative);
+            return;
+        }
+        if (!stat.isDirectory()) return;
+        const entries = await fs.promises.readdir(absolute, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isFile() && !entry.isDirectory()) continue;
+            await walk(path.join(absolute, entry.name), path.join(relative, entry.name));
+        }
+    };
+
+    for (const raw of inputPaths) {
+        if (typeof raw !== 'string' || !raw.trim()) continue;
+        const absolute = path.resolve(raw);
+        const stat = await fs.promises.stat(absolute);
+        if (stat.isDirectory()) await walk(absolute, path.basename(absolute));
+        else if (stat.isFile()) await addFile(absolute, path.basename(absolute));
+    }
+    return output;
+}
+
+function protectionForRenderer(descriptor: protectedPools.ProtectionDescriptor | null) {
+    if (!descriptor) return undefined;
+    return {
+        ...descriptor,
+        memberNames: descriptor.memberGameIds.map((id) => detectedGames.get(id)?.name ?? id)
+    };
 }
 
 function ensureCatalogBackgroundRefresh(steamRoot: string | null): void {
@@ -343,6 +398,8 @@ async function gameStatus(
         if (physicalRoot) cloud = await cloudFs.treeStats(physicalRoot);
     }
     const remembered = memory[game.id];
+    const hasProtectedFiles = await protectedPools.hasProtectedFiles(game.id);
+    const protectedCorrupt = await protectedPools.isGameInaccessible(game.id);
 
     return {
         id: game.id,
@@ -381,6 +438,8 @@ async function gameStatus(
         cloudFiles: cloud.files,
         rememberedBytes: remembered?.cloudBytes ?? remembered?.bytes ?? null,
         rememberedFiles: remembered?.cloudFiles ?? null,
+        hasProtectedFiles,
+        protectedCorrupt,
         disk
     };
 }
@@ -431,21 +490,26 @@ async function fullStatus() {
     };
 }
 
-async function requireRunningGame(id: GameId) {
+async function resolveGameCloud(id: GameId) {
     const game = gameById(id);
     const env = await getEnvironment();
     const install = await steam.findInstalledApp(env.libraries, game.appId);
     const status = await gameStatus(game, env, await readUsageMemory(), { install });
     const physicalRoot = physicalCloudRoot(game, env, install);
 
-    if (!status.running) {
-        throw new Error('The Steam session is not open for this volume.');
-    }
     if (!status.cloudRoot || !physicalRoot) {
         throw new Error('No local Auto-Cloud path is available for this game on the current platform.');
     }
 
     return { game, env, install, status, physicalRoot };
+}
+
+async function requireRunningGame(id: GameId) {
+    const resolved = await resolveGameCloud(id);
+    if (!resolved.status.running) {
+        throw new Error('The Steam session is not open for this volume.');
+    }
+    return resolved;
 }
 
 
@@ -512,6 +576,8 @@ function registerIpc() {
     ipcMain.handle('game:install', async (_event, id: GameId) => {
         const game = gameById(id);
         const steamRoot = await steam.detectSteamRoot();
+        if (!steamRoot) throw new Error('Steam is not installed.');
+        if (!await steam.isSteamRunning()) throw new Error('Steam is not running. Start Steam before installing a game.');
 
         const steamId64 = await steam.detectSteamId64(steamRoot);
         const libraryAppIds = await steam.scanLibraryAppIds(steamRoot, steamId64);
@@ -540,7 +606,18 @@ function registerIpc() {
 
     ipcMain.handle('game:background-start', async (_event, id: GameId) => startBackgroundGuard(id));
 
-    ipcMain.handle('game:background-stop', async (_event, id: GameId) => stopBackgroundGuard(id));
+    ipcMain.handle('game:background-stop', async (_event, id: GameId) => {
+        managedGameSessions.delete(id);
+        return stopBackgroundGuard(id);
+    });
+
+    ipcMain.handle('game:is-running', async (_event, id: GameId) => {
+        const game = gameById(id);
+        const env = await getEnvironment();
+        const install = await steam.findInstalledApp(env.libraries, game.appId);
+        if (!install.installed) return false;
+        return steam.isAppRunning(game, install);
+    });
 
     ipcMain.handle('game:request-stop', async (_event, id: GameId) => {
         const game = gameById(id);
@@ -556,8 +633,9 @@ function registerIpc() {
         }
     });
 
-    ipcMain.handle('cloud:prepare-sync', async (_event, id: GameId) => {
-        const { game, status, physicalRoot } = await requireRunningGame(id);
+    const prepareCloudForSync = async (id: GameId, requireRunning: boolean) => {
+        const resolved = requireRunning ? await requireRunningGame(id) : await resolveGameCloud(id);
+        const { game, status, physicalRoot } = resolved;
         const preparation = await cloudFs.prepareSplitFilesForSync(
             status.cloudRoot!,
             game.quotaBytes,
@@ -577,7 +655,14 @@ function registerIpc() {
             );
         }
         return preparation;
-    });
+    };
+
+    ipcMain.handle('cloud:prepare-sync', async (_event, id: GameId) => prepareCloudForSync(id, true));
+
+    // Used only when a managed game was closed outside VaporStow. The local
+    // Cloud still needs to be converted back to its Steam-safe representation
+    // before Steam finishes the post-exit upload.
+    ipcMain.handle('cloud:prepare-sync-offline', async (_event, id: GameId) => prepareCloudForSync(id, false));
 
     ipcMain.handle('cloud:content-summary', async (_event, id: GameId) => {
         const { status } = await requireRunningGame(id);
@@ -608,11 +693,16 @@ function registerIpc() {
             await carrierStorage.restoreWorkspace(physicalRoot, status.cloudRoot!);
             carrierHydratedSessions.add(id);
         }
-        return cloudFs.restoreSplitFiles(
+        const restored = await cloudFs.restoreSplitFiles(
             status.cloudRoot!,
             splitCacheRoot(id),
             (progress) => splitRestoreProgress.set(id, progress)
         );
+        // Remove stale data from replaced/dissolved protected pools before
+        // reading manifests, otherwise an old member could resurrect metadata.
+        await protectedPools.cleanupRetiredPoolsFromCloud(id, status.cloudRoot!).catch(() => ({ removed: 0 }));
+        await protectedPools.ingestManifests(status.cloudRoot!).catch(() => 0);
+        return restored;
     });
 
     ipcMain.handle('cloud:restore-progress', async (_event, id: GameId) => {
@@ -667,7 +757,49 @@ function registerIpc() {
     });
 
     ipcMain.handle('cloud:index-search', async (_event, query: string, limit?: number) => {
-        return cloudIndex.search(typeof query === 'string' ? query : '', limit);
+        const term = typeof query === 'string' ? query : '';
+        const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(240, Math.floor(limit!))) : 120;
+        const base = cloudIndex.search(term, 240);
+        const enriched: Array<(typeof base)[number] & { protection?: ReturnType<typeof protectionForRenderer> }> = [];
+        for (const entry of base) {
+            if (await protectedPools.isPathPendingDeletion(entry.gameId, entry.path)) continue;
+            enriched.push({
+                ...entry,
+                protection: protectionForRenderer(await protectedPools.descriptorFor(entry.gameId, entry.path))
+            });
+        }
+        const known = new Set(enriched.map((entry) => `${entry.gameId}:${entry.path}`));
+        const virtual: Array<(typeof enriched)[number]> = [];
+        for (const game of detectedGames.values()) {
+            const entries = await protectedPools.virtualSearch(game.id, term);
+            for (const entry of entries) {
+                const key = `${game.id}:${entry.path}`;
+                if (known.has(key)) continue;
+                known.add(key);
+                virtual.push({
+                    ...entry,
+                    gameId: game.id,
+                    gameName: game.name,
+                    volumeName: game.volumeName,
+                    cachedAt: new Date().toISOString(),
+                    protection: protectionForRenderer(entry.protection)
+                });
+            }
+        }
+        const combined = [...enriched, ...virtual];
+        const deduplicated: typeof combined = [];
+        const logicalProtected = new Set<string>();
+        for (const entry of combined) {
+            const protection = entry.protection;
+            if (protection && entry.type === 'file') {
+                const logicalKey = `${protection.poolId}:${String(entry.path).replace(/\\/g, '/')}`;
+                if (logicalProtected.has(logicalKey)) continue;
+                logicalProtected.add(logicalKey);
+            }
+            deduplicated.push(entry);
+            if (deduplicated.length >= normalizedLimit) break;
+        }
+        return deduplicated;
     });
 
     ipcMain.handle('cloud:index-rebuild', async (_event, id: GameId) => {
@@ -699,7 +831,220 @@ function registerIpc() {
 
     ipcMain.handle('cloud:list-directory', async (_event, id: GameId, relativeDirectory: string) => {
         const { status } = await requireRunningGame(id);
-        return cloudFs.listAuditDirectory(status.cloudRoot!, relativeDirectory || '');
+        const listing = await cloudFs.listAuditDirectory(status.cloudRoot!, relativeDirectory || '');
+        const entries: Array<cloudFs.AuditEntry & { protection?: ReturnType<typeof protectionForRenderer>; virtualProtected?: boolean }> = [];
+        for (const entry of listing.entries) {
+            if (await protectedPools.isPathPendingDeletion(id, entry.path)) continue;
+            entries.push({
+                ...entry,
+                protection: protectionForRenderer(await protectedPools.descriptorFor(id, entry.path))
+            });
+        }
+        const known = new Set(entries.map((entry) => entry.path.replace(/\\/g, '/')));
+        const virtual = await protectedPools.virtualEntriesForDirectory(id, listing.directory);
+        for (const entry of virtual) {
+            if (known.has(entry.path)) continue;
+            entries.push({ ...entry, protection: protectionForRenderer(entry.protection), virtualProtected: true });
+        }
+        entries.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+            return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        });
+        return { ...listing, entries };
+    });
+
+    ipcMain.handle('cloud:select-import-files', async (_event, id: GameId) => {
+        const game = gameById(id);
+        const result = await dialog.showOpenDialog(mainWindow!, {
+            title: `Import files · ${game.name}`,
+            properties: ['openFile', 'multiSelections']
+        });
+        if (result.canceled || result.filePaths.length === 0) return { canceled: true, files: [] };
+        return { canceled: false, files: await describeImportPaths(result.filePaths) };
+    });
+
+    ipcMain.handle('cloud:describe-import-paths', async (_event, inputPaths: string[]) => {
+        if (!Array.isArray(inputPaths)) throw new Error('Invalid dropped file list.');
+        return describeImportPaths(inputPaths);
+    });
+
+    ipcMain.handle('cloud:import-selected-files', async (_event, id: GameId, relativeDirectory: string, files: protectedPools.ImportSelection[]) => {
+        const { game, status } = await requireRunningGame(id);
+        if (!Array.isArray(files) || files.length === 0) throw new Error('Select at least one file.');
+        const mapped = files.map((file) => ({ source: file.sourcePath, relativePath: file.relativePath }));
+        await cloudFs.importMappedFiles(status.cloudRoot!, relativeDirectory || '', mapped, game.quotaBytes, game.maxFiles);
+        return { canceled: false, imported: files.length };
+    });
+
+    ipcMain.handle('protected:create-pool', async (_event, mode: protectedPools.ProtectedImportMode, originId: GameId, memberIds: GameId[], relativeDirectory: string, files: protectedPools.ImportSelection[]) => {
+        await requireRunningGame(originId);
+        if (mode !== 'mirror' && mode !== 'reed-solomon') throw new Error('Invalid protected storage mode.');
+        if (!Array.isArray(memberIds)) throw new Error('Invalid Cloud selection.');
+        const env = await getEnvironment();
+        for (const memberId of memberIds) {
+            const member = gameById(memberId);
+            const install = await steam.findInstalledApp(env.libraries, member.appId);
+            const status = await gameStatus(member, env, await readUsageMemory(), { install, deep: false });
+            if (!status.platformSupported) {
+                throw new Error(`${member.name} is not supported on this platform.`);
+            }
+            if (status.installing) {
+                throw new Error(`${member.name} is still installing.`);
+            }
+            if (!status.installed) {
+                throw new Error(`${member.name} must be installed before it can join protected storage.`);
+            }
+            if (!status.cloudRoot || (!status.cloudRootExists && status.rememberedBytes === null)) {
+                throw new Error(`${member.name} must be opened and synchronized once before it can join protected storage.`);
+            }
+            if (!protectedPools.isProtectedCloudEligible(member.quotaBytes, member.maxFiles)) {
+                throw new Error(`${member.name} requires at least 93 GiB of Steam Cloud quota and 10,000 file slots for protected storage.`);
+            }
+            if (memberId !== originId && status.running) {
+                throw new Error(`${member.name} is already running. Close it before starting a protected import.`);
+            }
+        }
+        const pool = await protectedPools.createPool(mode, originId, memberIds, relativeDirectory || '', files);
+        return {
+            id: pool.id,
+            mode: pool.mode,
+            memberGameIds: pool.memberGameIds,
+            layout: pool.layout ?? null,
+            fileCount: pool.files.length,
+            totalBytes: pool.files.reduce((sum, file) => sum + file.size, 0)
+        };
+    });
+
+    ipcMain.handle('protected:deploy', async (_event, poolId: string, id: GameId) => {
+        const { game, status } = await requireRunningGame(id);
+        return protectedPools.deployToCloud(poolId, id, status.cloudRoot!, game.quotaBytes, game.maxFiles);
+    });
+
+    ipcMain.handle('protected:finalize', async (_event, poolId: string) => {
+        const pool = await protectedPools.finalizePool(poolId);
+        return { id: pool.id, state: pool.state };
+    });
+
+    ipcMain.handle('protected:stage-delete', async (_event, poolId: string, logicalPath: string) => {
+        return protectedPools.stageEntryDeletion(poolId, logicalPath);
+    });
+
+    ipcMain.handle('protected:pending-deletions', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.pendingEntryDeletionsForGame(id);
+    });
+
+    ipcMain.handle('protected:delete-entry', async (_event, poolId: string, id: GameId, logicalPath: string) => {
+        const { status } = await requireRunningGame(id);
+        return protectedPools.deleteEntryFromCloud(poolId, id, status.cloudRoot!, logicalPath);
+    });
+
+    ipcMain.handle('protected:finalize-delete', async (_event, poolId: string, logicalPath: string) => {
+        return protectedPools.finalizeEntryDeletion(poolId, logicalPath);
+    });
+
+    ipcMain.handle('protected:mark-degraded', async (_event, poolId: string) => {
+        await protectedPools.markPoolDegraded(poolId);
+        return true;
+    });
+
+
+    ipcMain.handle('protected:rs-members', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.reedSolomonMemberIdsForGame(id);
+    });
+
+    ipcMain.handle('protected:repair-members', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.protectedRepairMemberIdsForGame(id);
+    });
+
+    ipcMain.handle('protected:mark-inaccessible', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.markGameInaccessible(id);
+    });
+
+    ipcMain.handle('protected:mark-accessible', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.markGameAccessible(id);
+    });
+
+    ipcMain.handle('protected:repair-issue', async (_event, id: GameId) => {
+        gameById(id);
+        return protectedPools.repairIssueForGame(id);
+    });
+
+    const repairCloudRoots = async (ids: GameId[]) => {
+        const env = await getEnvironment();
+        const roots: Partial<Record<GameId, string>> = {};
+        for (const id of ids) {
+            const game = gameById(id);
+            const install = await steam.findInstalledApp(env.libraries, game.appId);
+            const physicalRoot = physicalCloudRoot(game, env, install);
+            const root = logicalCloudRoot(game, physicalRoot);
+            if (root && fs.existsSync(root)) roots[id] = root;
+        }
+        return roots;
+    };
+
+    ipcMain.handle('protected:repair-replacement', async (_event, triggerId: GameId, corruptId: GameId, replacementId: GameId) => {
+        gameById(triggerId);
+        gameById(corruptId);
+        const replacement = gameById(replacementId);
+        if (!protectedPools.isProtectedCloudEligible(replacement.quotaBytes, replacement.maxFiles)) {
+            throw new Error('Replacement storage requires at least 93 GiB of Steam Cloud quota and 10,000 file slots.');
+        }
+        const env = await getEnvironment();
+        const replacementInstall = await steam.findInstalledApp(env.libraries, replacement.appId);
+        const replacementStatus = await gameStatus(replacement, env, await readUsageMemory(), { install: replacementInstall, deep: false });
+        if (!replacementStatus.platformSupported || replacementStatus.installing || !replacementStatus.installed || !replacementStatus.cloudRoot) {
+            throw new Error('The replacement Cloud is not ready.');
+        }
+        if (replacementStatus.protectedCorrupt) throw new Error('A corrupt Cloud cannot be used as a replacement.');
+        const issue = await protectedPools.repairIssueForGame(triggerId);
+        if (!issue || !issue.corruptGameIds.includes(corruptId)) throw new Error('The selected Cloud is not marked corrupt for this pool.');
+        const roots = await repairCloudRoots(issue.memberGameIds);
+        return protectedPools.prepareReplacementRepair(triggerId, corruptId, replacementId, roots);
+    });
+
+    ipcMain.handle('protected:repair-gather-prepare', async (_event, triggerId: GameId, destinationId: GameId) => {
+        gameById(triggerId);
+        const destination = gameById(destinationId);
+        const issue = await protectedPools.repairIssueForGame(triggerId);
+        if (!issue) throw new Error('No degraded protected pool requires repair.');
+        const env = await getEnvironment();
+        const destinationInstall = await steam.findInstalledApp(env.libraries, destination.appId);
+        const destinationStatus = await gameStatus(destination, env, await readUsageMemory(), { install: destinationInstall, deep: false });
+        if (!destinationStatus.platformSupported || destinationStatus.installing || !destinationStatus.installed || !destinationStatus.cloudRoot) {
+            throw new Error('The selected Cloud is not ready for repaired files.');
+        }
+        if (destinationStatus.protectedCorrupt) throw new Error('A corrupt Cloud cannot receive repaired files.');
+        const usedBytes = destinationStatus.rememberedBytes ?? destinationStatus.auditBytes ?? 0;
+        const usedFiles = destinationStatus.rememberedFiles ?? destinationStatus.auditFiles ?? 0;
+        if (destination.quotaBytes - usedBytes < issue.totalBytes || destination.maxFiles - usedFiles < issue.fileCount) {
+            throw new Error('The selected Cloud does not have enough capacity for the repaired files.');
+        }
+        const roots = await repairCloudRoots(issue.memberGameIds);
+        return protectedPools.prepareGatherRepair(triggerId, destinationId, roots);
+    });
+
+    ipcMain.handle('protected:repair-gather-apply', async (_event, planId: string, id: GameId) => {
+        const { game, status } = await requireRunningGame(id);
+        return protectedPools.applyGatherRepairToDestination(planId, id, status.cloudRoot!, game.quotaBytes, game.maxFiles);
+    });
+
+    ipcMain.handle('protected:repair-gather-cleanup', async (_event, planId: string, id: GameId) => {
+        const { status } = await requireRunningGame(id);
+        return protectedPools.cleanupGatherRepairFromCloud(planId, id, status.cloudRoot!);
+    });
+
+    ipcMain.handle('protected:repair-gather-finalize', async (_event, planId: string) => {
+        return protectedPools.finalizeGatherRepair(planId);
+    });
+
+    ipcMain.handle('protected:cleanup-retired', async (_event, id: GameId) => {
+        const { status } = await requireRunningGame(id);
+        return protectedPools.cleanupRetiredPoolsFromCloud(id, status.cloudRoot!);
     });
 
     ipcMain.handle('cloud:import-files', async (_event, id: GameId, relativeDirectory: string) => {
@@ -765,6 +1110,10 @@ function registerIpc() {
     );
 
     ipcMain.handle('cloud:delete', async (_event, id: GameId, relativePath: string) => {
+        const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        if (normalized === protectedPools.PROTECTED_LIBRARY_FOLDER) {
+            throw new Error('VaporStow Protected is managed automatically and cannot be deleted manually.');
+        }
         const { status } = await requireRunningGame(id);
         await cloudFs.deleteEntry(status.cloudRoot!, relativePath);
         return true;

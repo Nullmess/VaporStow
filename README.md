@@ -34,6 +34,8 @@
 - Generic Steam Auto-Cloud support, including restricted and non-recursive rules.
 - Cloud search, filters, favorites and circular carousel.
 - File and folder management with Advanced Search.
+- Normal, Mirror and Reed–Solomon multi-Cloud storage.
+- Drag and drop importing with protected-storage tags.
 - Large-file splitting and reconstruction.
 - Incremental synchronization with progress, speed and ETA.
 - Cloud usage, quota and file-slot tracking.

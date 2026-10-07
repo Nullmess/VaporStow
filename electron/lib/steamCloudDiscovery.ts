@@ -775,8 +775,10 @@ function definitionFromRecord(
         ? selected.relativePath.replace(/\\/g, '/')
         : normalizeRootName(selected.root);
     const volumeName = path.basename(pathLabel.replace(/\/$/, '')) || 'Cloud';
+    // Process detection must rely on executable/install-path evidence rather
+    // than the display name. Steam's own web helpers can contain a game title
+    // in their command line even when the game itself never started.
     const processHints = new Set<string>([
-        name,
         configuredInstallDir || '',
         ...launchExecutables(config)
     ].filter(Boolean));

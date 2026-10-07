@@ -316,7 +316,7 @@ async function fetchStorePage(
         const response = await fetch(url.toString(), {
             signal: controller.signal,
             headers: {
-                'User-Agent': 'VaporStow/1.0.1 outside-search',
+                'User-Agent': 'VaporStow/1.0.2 outside-search',
                 'Accept': 'application/json,text/html;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.8'
             }
@@ -574,7 +574,7 @@ async function fetchBuffer(url: string, timeoutMs: number): Promise<Buffer> {
     try {
         const response = await fetch(url, {
             signal: controller.signal,
-            headers: { 'User-Agent': 'VaporStow/1.0.1' }
+            headers: { 'User-Agent': 'VaporStow/1.0.2' }
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return Buffer.from(await response.arrayBuffer());
@@ -728,7 +728,7 @@ async function fetchPublicAppInfoRecord(
         const response = await fetch(`https://api.steamcmd.net/v1/info/${appId}`, {
             signal: controller.signal,
             headers: {
-                'User-Agent': 'VaporStow/1.0.1 outside-search',
+                'User-Agent': 'VaporStow/1.0.2 outside-search',
                 'Accept': 'application/json'
             }
         });
@@ -785,7 +785,7 @@ async function fetchStorePresentation(appId: string, deadline: number): Promise<
         const response = await fetch(url.toString(), {
             signal: controller.signal,
             headers: {
-                'User-Agent': 'VaporStow/1.0.1 outside-search',
+                'User-Agent': 'VaporStow/1.0.2 outside-search',
                 'Accept': 'application/json'
             }
         });

@@ -418,13 +418,17 @@ export async function isSteamRunning(): Promise<boolean> {
 function processMatches(game: GameDefinition, install: InstallInfo, processInfo: ProcessInfo): boolean {
     const hints = [...game.processHints];
     if (install.installDir) hints.push(install.installDir);
-    const command = processInfo.command.toLowerCase();
+    const command = processInfo.command.replace(/\\/g, '/').toLowerCase();
 
-    if (hints.some((hint) => hint && command.includes(hint.toLowerCase()))) return true;
-
+    // Steam can briefly expose the game title/path through steamwebhelper or
+    // launcher command lines even when the actual app failed to start. Never
+    // count Steam infrastructure itself as the game process.
     const steamInfrastructure = /(^|[\s/])(steam|steam\.sh|steamwebhelper)(?=\s|$)/.test(command)
-        || command.includes('com.valvesoftware.steam');
+        || command.includes('com.valvesoftware.steam')
+        || command.includes('/steamwebhelper');
     if (steamInfrastructure) return false;
+
+    if (hints.some((hint) => hint && command.includes(hint.replace(/\\/g, '/').toLowerCase()))) return true;
 
     return [
         `appid=${game.appId}`,
