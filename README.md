@@ -31,16 +31,15 @@
 ## ✨ Features
 
 - Browse and manage compatible Steam Clouds.
-- Generic Steam Auto-Cloud support, including restricted and non-recursive rules.
-- Cloud search, filters, favorites and circular carousel.
-- File and folder management with Advanced Search.
-- Normal, Mirror and Reed–Solomon multi-Cloud storage.
-- Drag and drop importing with protected-storage tags.
+- Generic Steam Auto-Cloud support, including restricted/non-recursive rules.
+- Normal, Mirror and Reed–Solomon storage modes.
+- Multi-Cloud synchronization, reconstruction and repair.
+- File and folder management with search and drag and drop.
 - Large-file splitting and reconstruction.
-- Incremental synchronization with progress, speed and ETA.
-- Cloud usage, quota and file-slot tracking.
-- Automatic Steam detection, launch and synchronization.
-- App metadata, artwork and outside-library discovery.
+- Cloud search, filters, favorites, hidden and protected views.
+- Cloud usage, quota, file limits, metadata and artwork.
+- Automatic Steam detection, launch monitoring and synchronization.
+- Protected-storage integrity with SHA-256 verification.
 - Windows, Linux and macOS support.
 
 ## 🚀 Usage

@@ -2596,6 +2596,10 @@ export default function App() {
     const [syncNotice, setSyncNotice] = useState<string | null>(null);
     const [operationDetail, setOperationDetail] = useState<string | null>(null);
     const [transferProgress, setTransferProgress] = useState<CloudTransferProgress | null>(null);
+    // Keep a stable card snapshot for opening/saving/closing transitions. Status refreshes
+    // can temporarily drop or replace the active game after Steam exits; the transition
+    // must remain visually mounted until the operation itself is finished.
+    const [operationGameSnapshot, setOperationGameSnapshot] = useState<GameStatus | null>(null);
     const [sessionDirty, setSessionDirty] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const [homeFilter, setHomeFilter] = useState<HomeCloudFilter>('all');
@@ -2752,6 +2756,11 @@ export default function App() {
         [status, activeGameId]
     );
 
+    const operationGame = useMemo(() => {
+        if (phase === 'closed' || phase === 'open') return null;
+        return operationGameSnapshot ?? activeGame;
+    }, [phase, operationGameSnapshot, activeGame]);
+
 
     useEffect(() => {
         return window.vaporApi.onFilesDropped((paths) => {
@@ -2795,11 +2804,11 @@ export default function App() {
     const activeAdvancedFilterCount = useMemo(() => advancedFilterCount(advancedFilters), [advancedFilters]);
 
     const homeCarouselGames = useMemo(() => {
-        if (!activeGame || phase === 'open' || filteredHomeGames.some((game) => game.id === activeGame.id)) {
+        if (!operationGame || filteredHomeGames.some((game) => game.id === operationGame.id)) {
             return filteredHomeGames;
         }
-        return [...filteredHomeGames, activeGame];
-    }, [filteredHomeGames, activeGame, phase]);
+        return [...filteredHomeGames, operationGame];
+    }, [filteredHomeGames, operationGame]);
 
     const homeEmptyMessage = useMemo(() => {
         if (homeQuery.trim()) return `No Steam Clouds match “${homeQuery.trim()}”.`;
@@ -3199,6 +3208,7 @@ export default function App() {
             setSelected(null);
             setSyncNotice(null);
             setSessionDirty(false);
+            setOperationGameSnapshot(origin);
             setPhase('saving');
             setOperationDetail('Preparing protected changes…');
             setTransferProgress({
@@ -3286,6 +3296,7 @@ export default function App() {
             setSelected(null);
             setSyncNotice(null);
             setSessionDirty(false);
+            setOperationGameSnapshot(origin);
             setPhase('saving');
             setOperationDetail(mode === 'mirror' ? 'Preparing mirrored files…' : 'Generating Reed–Solomon shards…');
             setTransferProgress({
@@ -3394,6 +3405,7 @@ export default function App() {
         try {
             setSelected(null);
             setSyncNotice(null);
+            setOperationGameSnapshot(repairModal.game);
             if (!repairModal.targetWorked) setActiveGameId(destinationId);
             setPhase('saving');
             setOperationDetail('Preparing protected repair…');
@@ -3475,6 +3487,7 @@ export default function App() {
         try {
             setModal(null);
             await sleep(120);
+            setOperationGameSnapshot(game);
             setActiveGameId(game.id);
             setPhase('opening');
             setListing({ directory: '', entries: [] });
@@ -3529,6 +3542,7 @@ export default function App() {
                         const issue = await window.vaporApi.getProtectedRepairIssue(game.id).catch(() => null);
                         setOperationDetail(null);
                         setTransferProgress(null);
+                        setOperationGameSnapshot(null);
                         setPhase('closed');
                         setActiveGameId(null);
                         const repairedStatus = await refresh().catch(() => openingStatus);
@@ -3692,6 +3706,7 @@ export default function App() {
             externalGameCloseMisses.current = 0;
             setOperationDetail(null);
             setTransferProgress(null);
+            setOperationGameSnapshot(null);
             setPhase('open');
             if (protectedMemberIds.length > 0) {
                 const issue = await window.vaporApi.getProtectedRepairIssue(game.id).catch(() => null);
@@ -3709,6 +3724,7 @@ export default function App() {
             } catch {}
             setOperationDetail(null);
             setTransferProgress(null);
+            setOperationGameSnapshot(null);
             setPhase('closed');
             setActiveGameId(null);
             setModal({
@@ -3745,6 +3761,7 @@ export default function App() {
         setSyncNotice(null);
         setOperationDetail(null);
         setTransferProgress(null);
+        setOperationGameSnapshot(null);
         setSessionDirty(false);
         setSelected(null);
         setSearchOpen(false);
@@ -3771,6 +3788,7 @@ export default function App() {
             setSelected(null);
             setSyncNotice(null);
             setTransferProgress(null);
+            setOperationGameSnapshot(game);
             setOperationDetail('Preparing the Cloud for a safe close…');
             setPhase('closing');
 
@@ -3805,6 +3823,7 @@ export default function App() {
                     await refresh();
                     await reloadDirectory(game.id, listing.directory);
                     setActiveGameId(game.id);
+                    setOperationGameSnapshot(null);
                     setPhase('open');
                 } catch {
                     closeCloudSession();
@@ -3850,6 +3869,7 @@ export default function App() {
         try {
             setSelected(null);
             setSyncNotice(null);
+            setOperationGameSnapshot(game);
             setOperationDetail('Preparing files…');
             setTransferProgress(null);
             setPhase('saving');
@@ -3997,6 +4017,7 @@ export default function App() {
                     await refresh();
                     await reloadDirectory(game.id, listing.directory);
                     setActiveGameId(game.id);
+                    setOperationGameSnapshot(null);
                     setPhase('open');
                 } catch {
                     setActiveGameId(null);
@@ -4070,6 +4091,7 @@ export default function App() {
                     setModal(null);
                     setSearchOpen(false);
                     setSelected(null);
+                    setOperationGameSnapshot(game);
                     setOperationDetail('Game closed. Starting automatic synchronization…');
                     setPhase('saving');
 
@@ -4242,9 +4264,9 @@ export default function App() {
                         </button>
                     )}
 
-                    {(!activeGameId || (activeGame && phase !== 'open')) ? (
-                        <section className={`home-clouds ${activeGame && phase !== 'open' ? 'cloud-operation-active' : ''}`}>
-                            <div className={`home-cloud-controls ${activeGame && phase !== 'open' ? 'operation-hidden' : ''}`}>
+                    {(!activeGameId || phase !== 'open') ? (
+                        <section className={`home-clouds ${operationGame ? 'cloud-operation-active' : ''}`}>
+                            <div className={`home-cloud-controls ${operationGame ? 'operation-hidden' : ''}`}>
                                 <div className="home-cloud-controls-row">
                                     <div className="home-cloud-filters" role="group" aria-label="Filter Steam Clouds">
                                         {([
@@ -4258,7 +4280,7 @@ export default function App() {
                                                 type="button"
                                                 className={homeFilter === value && modal?.kind !== 'advanced-search' ? 'active' : ''}
                                                 aria-pressed={homeFilter === value && modal?.kind !== 'advanced-search'}
-                                                disabled={Boolean(activeGame && phase !== 'open')}
+                                                disabled={Boolean(operationGame)}
                                                 onClick={() => {
                                                     setHomeFilter(value);
                                                     if (modal?.kind === 'advanced-search') setModal(null);
@@ -4275,7 +4297,7 @@ export default function App() {
                                         title="Protected Clouds"
                                         aria-label="Show Clouds used by Mirror or Reed–Solomon"
                                         aria-pressed={homeFilter === 'protected'}
-                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        disabled={Boolean(operationGame)}
                                         onClick={() => {
                                             setHomeFilter('protected');
                                             if (modal?.kind === 'advanced-search') setModal(null);
@@ -4290,7 +4312,7 @@ export default function App() {
                                         title="Hidden Clouds"
                                         aria-label="Show hidden Clouds"
                                         aria-pressed={homeFilter === 'hidden'}
-                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        disabled={Boolean(operationGame)}
                                         onClick={() => {
                                             setHomeFilter('hidden');
                                             if (modal?.kind === 'advanced-search') setModal(null);
@@ -4306,7 +4328,7 @@ export default function App() {
                                         aria-label="Advanced Cloud search"
                                         aria-pressed={homeFilter === 'advanced' || modal?.kind === 'advanced-search'}
                                         aria-expanded={modal?.kind === 'advanced-search'}
-                                        disabled={Boolean(activeGame && phase !== 'open')}
+                                        disabled={Boolean(operationGame)}
                                         onClick={() => {
                                             setHomeQuery('');
                                             setHomeSearchExpanded(false);
@@ -4324,7 +4346,7 @@ export default function App() {
                                             title="Search Clouds"
                                             aria-label="Search Clouds"
                                             aria-expanded={homeSearchExpanded}
-                                            disabled={Boolean(activeGame && phase !== 'open')}
+                                            disabled={Boolean(operationGame)}
                                             onClick={() => {
                                                 setHomeSearchExpanded(true);
                                                 window.requestAnimationFrame(() => {
@@ -4338,7 +4360,7 @@ export default function App() {
                                         <input
                                             ref={homeSearchInputRef}
                                             value={homeQuery}
-                                            disabled={Boolean(activeGame && phase !== 'open')}
+                                            disabled={Boolean(operationGame)}
                                             tabIndex={homeSearchExpanded ? 0 : -1}
                                             placeholder="Search cloud..."
                                             aria-label="Search detected Steam Clouds"
@@ -4394,7 +4416,7 @@ export default function App() {
                                     isHidden={(id) => hiddenGameIds.has(id) || Boolean(status?.games.find((game) => game.id === id)?.protectedCorrupt)}
                                     onToggleHidden={toggleHidden}
                                     steamRunning={status.steamRunning}
-                                    operationGame={activeGame && phase !== 'open' ? activeGame : null}
+                                    operationGame={operationGame}
                                     operationPhase={phase}
                                     operationDetail={operationDetail}
                                     operationProgress={transferProgress}

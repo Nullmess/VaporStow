@@ -2,15 +2,15 @@
 
 ## [1.0.2]
 
-- Added Normal, Mirror and Reed–Solomon storage modes.
-- Added multi-Cloud synchronization and pool repair.
-- Added protected-storage tags and views.
-- Added drag and drop importing.
-- Added queued pool-wide deletion.
-- Added hidden and corrupted Cloud states.
-- Added Steam-aware action locking.
-- Added game launch and exit monitoring.
-- Refined Cloud loading transitions.
+* Added Normal, Mirror and Reed–Solomon storage modes.
+* Added multi-Cloud synchronization and pool repair.
+* Added protected-storage tags and views.
+* Added drag and drop importing.
+* Added queued pool-wide deletion.
+* Added hidden and corrupted Cloud states.
+* Added Steam-aware action locking.
+* Added game launch and exit monitoring.
+* Refined Cloud loading transitions.
 
 ## [1.0.1]
 
