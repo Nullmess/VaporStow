@@ -2,15 +2,19 @@
 
 ## [1.0.2]
 
-* Added Normal, Mirror and Reed–Solomon storage modes.
-* Added multi-Cloud synchronization and pool repair.
-* Added protected-storage tags and views.
-* Added drag and drop importing.
-* Added queued pool-wide deletion.
-* Added hidden and corrupted Cloud states.
-* Added Steam-aware action locking.
-* Added game launch and exit monitoring.
-* Refined Cloud loading transitions.
+- Added Normal, Mirror and Reed–Solomon import modes.
+- Added sequential multi-Cloud synchronization.
+- Added protected-storage tags and deduplicated global search results.
+- Added hidden and protected Cloud views.
+- Added queued pool-wide protected file deletion.
+- Added Mirror and Reed–Solomon Cloud checks, repair and pool gathering.
+- Added high-capacity Cloud selection and an auto-managed protected-storage folder.
+- Added drag and drop importing for files and folders.
+- Added Steam-aware action and transition locks.
+- Added artwork loading indicators.
+- Refined Cloud opening and closing animations.
+- Fixed false-positive Cloud opening when Steam fails to launch an app.
+- Added automatic synchronization when an active game exits outside VaporStow.
 
 ## [1.0.1]
 

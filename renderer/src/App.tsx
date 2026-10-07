@@ -2251,7 +2251,20 @@ function CloudCarousel({
         const previousFocusedId = previousIds[previousIndex] ?? null;
 
         measure();
-        if (!carouselInitializedRef.current) {
+        const operationIndex = operationGame
+            ? games.findIndex((game) => game.id === operationGame.id)
+            : -1;
+
+        // The Home carousel is remounted when an open Cloud enters a saving/closing
+        // transition. In operation mode the operation card, not index 0, must be the
+        // initial carousel position. Otherwise a non-first Cloud is rendered off-center
+        // with zero operation opacity and the transition appears as an empty background.
+        if (operationIndex >= 0) {
+            carouselInitializedRef.current = true;
+            const centered = visualTargetForGame(operationIndex, positionRef.current);
+            commitPosition(centered);
+            targetRef.current = centered;
+        } else if (!carouselInitializedRef.current) {
             carouselInitializedRef.current = true;
             commitPosition(0);
             targetRef.current = 0;
@@ -2274,7 +2287,7 @@ function CloudCarousel({
             observer.disconnect();
             window.removeEventListener('resize', measure);
         };
-    }, [gameOrderKey, games, commitPosition, measure, visualTargetForGame]);
+    }, [gameOrderKey, games, operationGame?.id, commitPosition, measure, visualTargetForGame]);
 
     useEffect(() => () => stopAnimation(), [stopAnimation]);
 
@@ -2804,10 +2817,11 @@ export default function App() {
     const activeAdvancedFilterCount = useMemo(() => advancedFilterCount(advancedFilters), [advancedFilters]);
 
     const homeCarouselGames = useMemo(() => {
-        if (!operationGame || filteredHomeGames.some((game) => game.id === operationGame.id)) {
-            return filteredHomeGames;
-        }
-        return [...filteredHomeGames, operationGame];
+        // During opening/saving/closing the operation card is the only carousel item.
+        // This makes the transition independent from the current Home filter/order and
+        // prevents a carousel remount from briefly selecting another (invisible) card.
+        if (operationGame) return [operationGame];
+        return filteredHomeGames;
     }, [filteredHomeGames, operationGame]);
 
     const homeEmptyMessage = useMemo(() => {
