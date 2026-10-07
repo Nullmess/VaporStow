@@ -43,6 +43,29 @@
 - App metadata, artwork and outside-library discovery.
 - Windows, Linux and macOS support.
 
+## ☁️ Steam Cloud workflow
+
+```mermaid
+flowchart LR
+    A[Open Steam] --> B[Launch Game]
+    B --> C[Steam Cloud Open]
+
+    C --> D[Edit]
+    C --> E[Delete]
+    C --> F[Import]
+
+    D --> G[Exit Game]
+    E --> G
+    F --> G
+
+    G --> H[Steam Cloud Sync]
+
+    H --> I[Google Cloud Storage]
+    H --> J[Microsoft Azure Blob Storage]
+    H --> K[Amazon S3]
+    H --> L[Oracle Object Storage]
+```
+
 ## 🚀 Usage
 
 VaporStow development uses **Node.js 22.x**.
