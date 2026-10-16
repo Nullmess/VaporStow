@@ -9,7 +9,7 @@
 ---
 
 <p align="center">
-    ☁️ Steam Auto-Cloud file manager.
+    ☁️ Steam Cloud file manager for supported games.
 </p>
 
 <p align="center">
