@@ -9,7 +9,7 @@
 ---
 
 <p align="center">
-    ☁️ Cross-platform Steam Auto-Cloud file manager.
+    ☁️ Steam Auto-Cloud file manager.
 </p>
 
 <p align="center">
