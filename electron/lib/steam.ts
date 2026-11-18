@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GameDefinition } from '../games';
 
@@ -515,7 +515,8 @@ async function commandAvailable(command: string): Promise<boolean> {
 }
 
 function backgroundHints(game: GameDefinition, install: InstallInfo): string[] {
-    const values = [game.name, ...game.windowHints, ...game.processHints];
+    // Proton and Steam Runtime windows get the `steam_app_<appid>` class.
+    const values = [game.name, ...game.windowHints, ...game.processHints, `steam_app_${game.appId}`];
     if (install.installDir) values.push(path.basename(install.installDir));
     return [...new Set(values.map((value) => value.trim().toLowerCase()).filter((value) => value.length >= 3))];
 }
@@ -551,21 +552,64 @@ function isNewHyprRules(version: { major: number; minor: number } | null): boole
     return version.major > 0 || version.minor >= 53;
 }
 
-async function setHyprNamedRuleProperty(name: string, property: string, value: string): Promise<boolean> {
+// `hyprctl keyword` exits with 0 even when it refuses a command (bad rule, or
+// a Lua config): only its "ok" answer means the command was applied.
+async function hyprctlOk(args: string[]): Promise<boolean> {
     try {
-        await execFileAsync('hyprctl', ['keyword', `windowrule[${name}]:${property} ${value}`], {
-            maxBuffer: 1024 * 1024
-        });
-        return true;
+        const { stdout } = await execFileAsync('hyprctl', args, { maxBuffer: 1024 * 1024 });
+        return stdout.trim() === 'ok';
     } catch {
         return false;
     }
+}
+
+function luaString(value: string): string {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n')}"`;
+}
+
+// Lua configs (hyprland.lua) refuse `keyword` and the legacy dispatch syntax:
+// there, named rules and dispatchers only go through `hyprctl eval`.
+async function setHyprNamedRule(name: string, matchProp: 'class' | 'title', regex: string): Promise<boolean> {
+    if (await hyprctlOk(['keyword', `windowrule[${name}]:match:${matchProp} ${regex}`])) {
+        await hyprctlOk(['keyword', `windowrule[${name}]:workspace special:vaporstow silent`]);
+        await hyprctlOk(['keyword', `windowrule[${name}]:no_initial_focus on`]);
+        await hyprctlOk(['keyword', `windowrule[${name}]:no_anim on`]);
+        await hyprctlOk(['keyword', `windowrule[${name}]:suppress_event activate activatefocus fullscreen maximize`]);
+        await hyprctlOk(['keyword', `windowrule[${name}]:enable true`]);
+        return true;
+    }
+    return hyprctlOk(['eval', [
+        `hl.window_rule({ name = ${luaString(name)}, match = { ${matchProp} = ${luaString(regex)} },`,
+        'workspace = "special:vaporstow silent", no_initial_focus = true, no_anim = true,',
+        'suppress_event = "activate activatefocus fullscreen maximize", enabled = true })'
+    ].join(' ')]);
+}
+
+async function disableHyprNamedRule(name: string): Promise<void> {
+    if (await hyprctlOk(['keyword', `windowrule[${name}]:enable false`])) return;
+    await hyprctlOk(['eval', `hl.window_rule({ name = ${luaString(name)}, enabled = false })`]);
+}
+
+async function moveToHyprStash(address: string): Promise<boolean> {
+    if (await hyprctlOk(['dispatch', 'movetoworkspacesilent', `special:vaporstow,address:${address}`])) return true;
+    return hyprctlOk(['eval', [
+        'hl.dispatch(hl.dsp.window.move({ workspace = "special:vaporstow", follow = false,',
+        `window = ${luaString(`address:${address}`)} }))`
+    ].join(' ')]);
 }
 
 export async function prepareBackgroundApp(
     game: GameDefinition,
     install: InstallInfo
 ): Promise<{ mode: string; prepared: boolean }> {
+    if (process.platform === 'linux' && !process.env.HYPRLAND_INSTANCE_SIGNATURE) {
+        if (process.env.SWAYSOCK && await commandAvailable('swaymsg') && startSwayWatcher(game, install)) {
+            return { mode: 'sway-window-events', prepared: true };
+        }
+        if (isKdeSession() && await commandAvailable('dbus-send') && await loadKwinScript(game, install)) {
+            return { mode: 'kwin-script', prepared: true };
+        }
+    }
     if (process.platform !== 'linux' || !process.env.HYPRLAND_INSTANCE_SIGNATURE) {
         return { mode: 'runtime-guard', prepared: false };
     }
@@ -577,25 +621,9 @@ export async function prepareBackgroundApp(
     }
 
     const regex = hyprRegex(game, install);
-    const names = [`vaporstow-${game.id}-class`, `vaporstow-${game.id}-title`];
-    const matches: Array<[string, string]> = [
-        ['match:class', regex],
-        ['match:title', regex]
-    ];
-
     let prepared = false;
-    for (let index = 0; index < names.length; index += 1) {
-        const name = names[index];
-        const [matchProp, matchValue] = matches[index];
-        const ok = await setHyprNamedRuleProperty(name, matchProp, matchValue);
-        if (!ok) continue;
-
-        await setHyprNamedRuleProperty(name, 'workspace', 'special:vaporstow silent');
-        await setHyprNamedRuleProperty(name, 'no_initial_focus', 'on');
-        await setHyprNamedRuleProperty(name, 'no_anim', 'on');
-        await setHyprNamedRuleProperty(name, 'suppress_event', 'activate activatefocus fullscreen maximize');
-        await setHyprNamedRuleProperty(name, 'enable', 'true');
-        prepared = true;
+    for (const matchProp of ['class', 'title'] as const) {
+        if (await setHyprNamedRule(`vaporstow-${game.id}-${matchProp}`, matchProp, regex)) prepared = true;
     }
 
     return {
@@ -605,13 +633,17 @@ export async function prepareBackgroundApp(
 }
 
 export async function cleanupBackgroundApp(game: GameDefinition): Promise<void> {
+    stopHiderHelper(game.id);
+    if (process.platform === 'linux' && isKdeSession() && await commandAvailable('dbus-send')) {
+        await unloadKwinScript(game);
+    }
     if (process.platform !== 'linux' || !process.env.HYPRLAND_INSTANCE_SIGNATURE) return;
     if (!(await commandAvailable('hyprctl'))) return;
     const version = await hyprlandVersionMajorMinor();
     if (!isNewHyprRules(version)) return;
 
     for (const name of [`vaporstow-${game.id}-class`, `vaporstow-${game.id}-title`]) {
-        await setHyprNamedRuleProperty(name, 'enable', 'false');
+        await disableHyprNamedRule(name);
     }
 }
 
@@ -649,15 +681,7 @@ async function backgroundOnHyprland(game: GameDefinition, install: InstallInfo, 
             ]);
             if (!pidMatch && !metadataMatch) continue;
 
-            try {
-                await execFileAsync('hyprctl', [
-                    'dispatch',
-                    'movetoworkspacesilent',
-                    `special:vaporstow,address:${client.address}`
-                ]);
-                affected += 1;
-            } catch {
-            }
+            if (await moveToHyprStash(client.address)) affected += 1;
         }
 
         return affected;
@@ -668,6 +692,7 @@ async function backgroundOnHyprland(game: GameDefinition, install: InstallInfo, 
 
 type SwayNode = {
     id?: number;
+    type?: string;
     pid?: number;
     name?: string;
     app_id?: string;
@@ -676,7 +701,10 @@ type SwayNode = {
     floating_nodes?: SwayNode[];
 };
 
+// The scratchpad is the hidden `__i3_scratch` workspace: windows already there
+// are left out, otherwise every tick would move them again and report them.
 function flattenSwayTree(node: SwayNode, output: SwayNode[] = []): SwayNode[] {
+    if (node.type === 'workspace' && node.name === '__i3_scratch') return output;
     output.push(node);
     for (const child of node.nodes || []) flattenSwayTree(child, output);
     for (const child of node.floating_nodes || []) flattenSwayTree(child, output);
@@ -885,6 +913,147 @@ async function backgroundOnMac(pids: number[]): Promise<number> {
     return affected;
 }
 
+// Long-running helpers (one per background guard) that hide the game window
+// as soon as it appears, instead of waiting for the next polling tick.
+type HiderHelper = { child: ChildProcess; ready: boolean; hidden: number };
+const hiderHelpers = new Map<string, HiderHelper>();
+
+process.once('exit', () => {
+    for (const helper of hiderHelpers.values()) helper.child.kill();
+});
+
+function registerHelper(gameId: string, child: ChildProcess, onLine: (helper: HiderHelper, line: string) => void): HiderHelper {
+    const helper: HiderHelper = { child, ready: false, hidden: 0 };
+    let pending = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+        const lines = (pending + chunk.toString()).split(/\r?\n/);
+        pending = lines.pop() ?? '';
+        for (const line of lines) onLine(helper, line);
+    });
+    const forget = () => {
+        if (hiderHelpers.get(gameId) === helper) hiderHelpers.delete(gameId);
+    };
+    child.once('error', forget);
+    child.once('exit', forget);
+    hiderHelpers.set(gameId, helper);
+    return helper;
+}
+
+// sway cannot remove a `for_window` rule once added, so instead of a rule
+// that would outlive the guard, its window events are followed and a new
+// game window goes to the scratchpad a few ms after it maps.
+function startSwayWatcher(game: GameDefinition, install: InstallInfo): boolean {
+    stopHiderHelper(game.id);
+    let child: ChildProcess;
+    try {
+        child = spawn('swaymsg', ['-r', '-t', 'subscribe', '-m', '["window"]'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+        return false;
+    }
+
+    const helper = registerHelper(game.id, child, (helper, line) => {
+        let event: { change?: string; container?: SwayNode };
+        try {
+            event = JSON.parse(line);
+        } catch {
+            return;
+        }
+        const node = event.container;
+        if (event.change !== 'new' || !node?.id) return;
+        const values = [node.app_id, node.name, node.window_properties?.class, node.window_properties?.instance];
+        if (!metadataMatchesGame(game, install, values)) return;
+        execFile('swaymsg', [`[con_id=${node.id}]`, 'move', 'scratchpad'], (error) => {
+            if (!error) helper.hidden += 1;
+        });
+    });
+    child.once('spawn', () => {
+        helper.ready = true;
+    });
+    return true;
+}
+
+function isKdeSession(): boolean {
+    const desktops = (process.env.XDG_CURRENT_DESKTOP || '').toUpperCase().split(':');
+    return desktops.includes('KDE') || Boolean(process.env.KDE_SESSION_VERSION);
+}
+
+// KWin runs scripts loaded over D-Bus: this one minimizes the game windows as
+// KWin adds them, before they get focus, and stops when it is unloaded.
+function kwinScript(game: GameDefinition, install: InstallInfo): string {
+    const pattern = backgroundHints(game, install).map((hint) => escapeRe2(hint)).join('|') || '^$';
+    return [
+        `const pattern = new RegExp(${JSON.stringify(pattern)}, 'i');`,
+        'function hide(window) {',
+        '    window.minimized = true;',
+        '    window.skipTaskbar = true;',
+        '    window.skipPager = true;',
+        '    window.skipSwitcher = true;',
+        '}',
+        'function consider(window) {',
+        '    if (!window.normalWindow && !window.dialog) return;',
+        "    const text = window.resourceClass + ' ' + window.resourceName + ' ' + window.caption;",
+        '    if (/vaporstow/i.test(text) || !pattern.test(text)) return;',
+        '    hide(window);',
+        // Games often show themselves again once loaded (Electron's show(),
+        // an activation request): hide again for as long as the script runs.
+        '    if (window.minimizedChanged) window.minimizedChanged.connect(() => {',
+        '        if (!window.minimized) hide(window);',
+        '    });',
+        '}',
+        '(workspace.windowAdded || workspace.clientAdded).connect(consider);',
+        '(workspace.windowList ? workspace.windowList() : workspace.clientList()).forEach(consider);'
+    ].join('\n');
+}
+
+async function kwinCall(objectPath: string, method: string, ...args: string[]): Promise<string | null> {
+    try {
+        const { stdout } = await execFileAsync('dbus-send', [
+            '--session', '--print-reply', '--dest=org.kde.KWin', objectPath, method, ...args
+        ], { maxBuffer: 1024 * 1024 });
+        return stdout;
+    } catch {
+        return null;
+    }
+}
+
+async function loadKwinScript(game: GameDefinition, install: InstallInfo): Promise<boolean> {
+    await unloadKwinScript(game);
+    const name = `vaporstow-${game.id}`;
+    const file = path.join(os.tmpdir(), `${name}.js`);
+    try {
+        await fsp.writeFile(file, kwinScript(game, install));
+    } catch {
+        return false;
+    }
+    const reply = await kwinCall('/Scripting', 'org.kde.kwin.Scripting.loadScript', `string:${file}`, `string:${name}`);
+    const id = Number(reply?.match(/int32 (-?\d+)/)?.[1] ?? -1);
+    if (id < 0) return false;
+    // Plasma 6 publishes the script at /Scripting/Script<id>, Plasma 5 at /<id>.
+    return (await kwinCall(`/Scripting/Script${id}`, 'org.kde.kwin.Script.run')) !== null
+        || (await kwinCall(`/${id}`, 'org.kde.kwin.Script.run')) !== null;
+}
+
+async function unloadKwinScript(game: GameDefinition): Promise<void> {
+    await kwinCall('/Scripting', 'org.kde.kwin.Scripting.unloadScript', `string:vaporstow-${game.id}`);
+}
+
+function stopHiderHelper(gameId: string): void {
+    const helper = hiderHelpers.get(gameId);
+    if (!helper) return;
+    hiderHelpers.delete(gameId);
+    helper.child.kill();
+}
+
+// Game windows hidden by the helper since the last call, or null while no
+// helper is ready (the polling fallback then keeps running).
+function takeHelperHidden(gameId: string): number | null {
+    const helper = hiderHelpers.get(gameId);
+    if (!helper?.ready) return null;
+    const hidden = helper.hidden;
+    helper.hidden = 0;
+    return hidden;
+}
+
 export async function backgroundApp(
     game: GameDefinition,
     install: InstallInfo
@@ -899,7 +1068,9 @@ export async function backgroundApp(
         const hypr = await backgroundOnHyprland(game, install, pids);
         if (hypr > 0) return { mode: 'hyprland-special-workspace', affected: hypr };
 
+        const watched = takeHelperHidden(game.id) ?? 0;
         const sway = await backgroundOnSway(game, install, pids);
+        if (watched > 0) return { mode: 'sway-window-events', affected: watched + sway };
         if (sway > 0) return { mode: 'sway-scratchpad', affected: sway };
 
         const kde = await backgroundOnKdeWayland(pids);
