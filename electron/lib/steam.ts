@@ -638,6 +638,11 @@ export async function prepareBackgroundApp(
     game: GameDefinition,
     install: InstallInfo
 ): Promise<{ mode: string; prepared: boolean }> {
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+        const started = startHiderHelper(game, install);
+        if (!started) return { mode: 'runtime-guard', prepared: false };
+        return { mode: process.platform === 'win32' ? 'windows-event-hook' : 'macos-hide-helper', prepared: true };
+    }
     if (process.platform === 'linux' && !process.env.HYPRLAND_INSTANCE_SIGNATURE) {
         if (process.env.SWAYSOCK && await commandAvailable('swaymsg') && startSwayWatcher(game, install)) {
             return { mode: 'sway-window-events', prepared: true };
@@ -937,6 +942,95 @@ async function backgroundOnMac(pids: number[]): Promise<number> {
     return affected;
 }
 
+// Windows and macOS: polling from here spawns PowerShell/osascript on every
+// tick (seconds on Windows, where Add-Type recompiles each time), so the game
+// window stays visible meanwhile. A helper started once per guard hides every
+// window of an executable under the install directory as soon as it appears,
+// and exits by itself when VaporStow does.
+const WINDOWS_HIDER = `Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+public static class VaporHider {
+  delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+  delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int x; public int y; }
+  [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventProc proc, uint pid, uint tid, uint flags);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr hWnd, int cmd);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  [DllImport("user32.dll")] static extern int GetMessage(out MSG msg, IntPtr hWnd, uint min, uint max);
+  [DllImport("user32.dll")] static extern bool PostThreadMessage(uint tid, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
+  static string root;
+  static WinEventProc proc;
+  static string ImagePath(uint pid) {
+    IntPtr handle = OpenProcess(0x1000, false, pid);
+    if (handle == IntPtr.Zero) return null;
+    try {
+      StringBuilder name = new StringBuilder(1024);
+      uint size = (uint)name.Capacity;
+      return QueryFullProcessImageName(handle, 0, name, ref size) ? name.ToString() : null;
+    } finally { CloseHandle(handle); }
+  }
+  static void Consider(IntPtr hWnd) {
+    if (hWnd == IntPtr.Zero || !IsWindowVisible(hWnd) || GetAncestor(hWnd, 2) != hWnd) return;
+    uint pid;
+    GetWindowThreadProcessId(hWnd, out pid);
+    string image = ImagePath(pid);
+    if (image == null || !image.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return;
+    ShowWindowAsync(hWnd, 0);
+    Console.Out.WriteLine("hidden " + pid);
+    Console.Out.Flush();
+  }
+  public static void Run(string dir, int parentPid) {
+    root = dir.TrimEnd('\\\\') + "\\\\";
+    proc = (hook, ev, hWnd, idObject, idChild, thread, time) => { if (idObject == 0 && idChild == 0) Consider(hWnd); };
+    SetWinEventHook(0x8002, 0x8002, IntPtr.Zero, proc, 0, 0, 0);
+    SetWinEventHook(0x0003, 0x0003, IntPtr.Zero, proc, 0, 0, 0);
+    EnumWindows((hWnd, lParam) => { Consider(hWnd); return true; }, IntPtr.Zero);
+    uint tid = GetCurrentThreadId();
+    new Thread(() => {
+      try { Process.GetProcessById(parentPid).WaitForExit(); } catch { }
+      PostThreadMessage(tid, 0x0012, IntPtr.Zero, IntPtr.Zero);
+    }) { IsBackground = true }.Start();
+    Console.Out.WriteLine("ready");
+    Console.Out.Flush();
+    MSG msg;
+    while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { }
+  }
+}
+'@
+[VaporHider]::Run($env:VAPORSTOW_HIDE_DIR, [int]$env:VAPORSTOW_PARENT_PID)`;
+
+// NSRunningApplication.hide needs no Accessibility permission, unlike the
+// System Events route of backgroundOnMac.
+const MAC_HIDER = `ObjC.import('AppKit');
+const env = $.NSProcessInfo.processInfo.environment;
+const root = env.objectForKey('VAPORSTOW_HIDE_DIR').js.replace(/\\/+$/, '').toLowerCase() + '/';
+const parent = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(env.objectForKey('VAPORSTOW_PARENT_PID').js));
+const out = $.NSFileHandle.fileHandleWithStandardOutput;
+const say = (line) => out.writeData($(line + '\\n').dataUsingEncoding($.NSUTF8StringEncoding));
+say('ready');
+while (parent.isNil() || !parent.isTerminated) {
+    const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+    for (let index = 0; index < apps.count; index += 1) {
+        const app = apps.objectAtIndex(index);
+        const url = app.executableURL;
+        if (url.isNil() || app.isHidden) continue;
+        if (!url.path.js.toLowerCase().startsWith(root)) continue;
+        if (app.hide) say('hidden ' + app.processIdentifier);
+    }
+    delay(0.05);
+}`;
+
 // Long-running helpers (one per background guard) that hide the game window
 // as soon as it appears, instead of waiting for the next polling tick.
 type HiderHelper = { child: ChildProcess; ready: boolean; hidden: number };
@@ -945,6 +1039,30 @@ const hiderHelpers = new Map<string, HiderHelper>();
 process.once('exit', () => {
     for (const helper of hiderHelpers.values()) helper.child.kill();
 });
+
+function startHiderHelper(game: GameDefinition, install: InstallInfo): boolean {
+    stopHiderHelper(game.id);
+    if (!install.installDir) return false;
+
+    const env = { ...process.env, VAPORSTOW_HIDE_DIR: install.installDir, VAPORSTOW_PARENT_PID: String(process.pid) };
+    let child: ChildProcess;
+    try {
+        child = process.platform === 'win32'
+            ? spawn('powershell.exe', [
+                '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-EncodedCommand', Buffer.from(WINDOWS_HIDER, 'utf16le').toString('base64')
+            ], { env, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+            : spawn('osascript', ['-l', 'JavaScript', '-e', MAC_HIDER], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+        return false;
+    }
+
+    registerHelper(game.id, child, (helper, line) => {
+        if (line === 'ready') helper.ready = true;
+        else if (line.startsWith('hidden ')) helper.hidden += 1;
+    });
+    return true;
+}
 
 function registerHelper(gameId: string, child: ChildProcess, onLine: (helper: HiderHelper, line: string) => void): HiderHelper {
     const helper: HiderHelper = { child, ready: false, hidden: 0 };
@@ -1086,6 +1204,13 @@ export async function backgroundApp(
     game: GameDefinition,
     install: InstallInfo
 ): Promise<{ mode: string; affected: number }> {
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+        const hidden = takeHelperHidden(game.id);
+        if (hidden !== null) {
+            return { mode: process.platform === 'win32' ? 'windows-event-hook' : 'macos-hide-helper', affected: hidden };
+        }
+    }
+
     const matches = await matchingProcesses(game, install);
     const pids = [...new Set(matches.map((item) => item.pid).filter(Boolean))];
 
