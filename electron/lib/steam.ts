@@ -415,34 +415,52 @@ export async function isSteamRunning(): Promise<boolean> {
     });
 }
 
+// A game process is recognized by its install directory in its command line
+// (the native path, or the `steamapps/common/<dir>/` part of a Proton `Z:\`
+// path) or by an exact appid marker. Bare names from the launch config, such
+// as `start` (from `start.sh`), used to be searched anywhere: they matched
+// `start-hyprland`, so the whole desktop session counted as the game, its
+// windows were hidden and stopping the game would have sent it SIGTERM.
 function processMatches(game: GameDefinition, install: InstallInfo, processInfo: ProcessInfo): boolean {
-    const hints = [...game.processHints];
-    if (install.installDir) hints.push(install.installDir);
     const command = processInfo.command.replace(/\\/g, '/').toLowerCase();
 
     // Steam can briefly expose the game title/path through steamwebhelper or
     // launcher command lines even when the actual app failed to start. Never
-    // count Steam infrastructure itself as the game process.
+    // count Steam infrastructure itself as the game process. With Flatpak
+    // Steam every game path runs through ~/.var/app/com.valvesoftware.Steam/:
+    // only the `flatpak run` launcher and its sandbox are Steam itself.
     const steamInfrastructure = /(^|[\s/])(steam|steam\.sh|steamwebhelper)(?=\s|$)/.test(command)
-        || command.includes('com.valvesoftware.steam')
+        || /(^|[\s/])(flatpak|bwrap)\s.*com\.valvesoftware\.steam/.test(command)
         || command.includes('/steamwebhelper');
     if (steamInfrastructure) return false;
 
-    if (hints.some((hint) => hint && command.includes(hint.replace(/\\/g, '/').toLowerCase()))) return true;
+    if (install.installDir) {
+        const installDir = install.installDir.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+        const folder = installDir.split('/').pop();
+        if (command.includes(`${installDir}/`) || (folder && command.includes(`/steamapps/common/${folder}/`))) return true;
+    }
 
-    return [
-        `appid=${game.appId}`,
-        `appid ${game.appId}`,
-        `steamappid=${game.appId}`,
-        `steam_appid=${game.appId}`,
-        `steamgameid=${game.appId}`
-    ].some((marker) => command.includes(marker));
+    // appid=, steamappid=, steam_appid=, steamgameid= and `appid <id>`, never
+    // followed by another digit (appid=12 must not match appid=1234).
+    return new RegExp(`(?:appid|steamgameid)[= ]${game.appId}(?!\\d)`).test(command);
+}
+
+// VaporStow and the processes it runs under (its terminal, the desktop
+// session) are never the game, whatever their command lines contain.
+function ownAncestry(processes: ProcessInfo[]): Set<number> {
+    const parents = new Map(processes.map((processInfo) => [processInfo.pid, processInfo.ppid]));
+    const own = new Set<number>();
+    for (let pid = process.pid; pid > 0 && !own.has(pid); pid = parents.get(pid) ?? 0) own.add(pid);
+    return own;
 }
 
 async function matchingProcesses(game: GameDefinition, install: InstallInfo): Promise<ProcessInfo[]> {
     const processes = await processList();
+    const own = ownAncestry(processes);
     const matched = new Set(
-        processes.filter((processInfo) => processMatches(game, install, processInfo)).map((item) => item.pid)
+        processes
+            .filter((processInfo) => !own.has(processInfo.pid) && processMatches(game, install, processInfo))
+            .map((item) => item.pid)
     );
 
     let changed = true;
@@ -514,10 +532,14 @@ async function commandAvailable(command: string): Promise<boolean> {
     return false;
 }
 
+// Names a game window is recognized by, when its process is not: the game
+// name, its install folder and the `steam_app_<appid>` class that Proton and
+// Steam Runtime windows get. Launch executables (`start`, `game.exe`) are left
+// out, and none is ever searched as a substring of another window's title:
+// `start` hid every window titled "Getting started".
 function backgroundHints(game: GameDefinition, install: InstallInfo): string[] {
-    // Proton and Steam Runtime windows get the `steam_app_<appid>` class.
-    const values = [game.name, ...game.windowHints, ...game.processHints, `steam_app_${game.appId}`];
-    if (install.installDir) values.push(path.basename(install.installDir));
+    const values = [game.name, ...game.windowHints, `steam_app_${game.appId}`];
+    if (install.installDir) values.push(install.installDir.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || '');
     return [...new Set(values.map((value) => value.trim().toLowerCase()).filter((value) => value.length >= 3))];
 }
 
@@ -525,12 +547,26 @@ function escapeRe2(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function hyprRegex(game: GameDefinition, install: InstallInfo): string {
-    const hints = backgroundHints(game, install)
-        .map((hint) => escapeRe2(hint))
-        .filter(Boolean);
+// Classes must equal a hint; titles must be a hint, optionally followed by a
+// version ("Bitburner v3.0.1"), so a browser tab about the game never matches.
+const TITLE_VERSION = '( v?[0-9][^ ]*.*)?';
+
+function windowMatchesGame(
+    game: GameDefinition,
+    install: InstallInfo,
+    classes: Array<string | null | undefined>,
+    titles: Array<string | null | undefined>
+): boolean {
+    const hints = backgroundHints(game, install);
+    if (classes.some((value) => value && hints.includes(value.trim().toLowerCase()))) return true;
+    const title = new RegExp(`^(${hints.map((hint) => escapeRe2(hint)).join('|')})${TITLE_VERSION}$`, 'i');
+    return hints.length > 0 && titles.some((value) => value && title.test(value.trim()));
+}
+
+function hyprRegex(game: GameDefinition, install: InstallInfo, matchProp: 'class' | 'title'): string {
+    const hints = backgroundHints(game, install).map((hint) => escapeRe2(hint));
     if (hints.length === 0) return '(?i)^$';
-    return `(?i)(${hints.map((hint) => `.*${hint}.*`).join('|')})`;
+    return `(?i)^(${hints.join('|')})${matchProp === 'title' ? TITLE_VERSION : ''}$`;
 }
 
 async function hyprlandVersionMajorMinor(): Promise<{ major: number; minor: number } | null> {
@@ -625,9 +661,9 @@ export async function prepareBackgroundApp(
         return { mode: 'hyprland-runtime-guard', prepared: false };
     }
 
-    const regex = hyprRegex(game, install);
     let prepared = false;
     for (const matchProp of ['class', 'title'] as const) {
+        const regex = hyprRegex(game, install, matchProp);
         if (await setHyprNamedRule(`vaporstow-${game.id}-${matchProp}`, matchProp, regex)) prepared = true;
     }
 
@@ -652,12 +688,6 @@ export async function cleanupBackgroundApp(game: GameDefinition): Promise<void> 
     }
 }
 
-function metadataMatchesGame(game: GameDefinition, install: InstallInfo, values: Array<string | null | undefined>): boolean {
-    const haystack = values.filter(Boolean).join(' ').toLowerCase();
-    if (!haystack || haystack.includes('vaporstow')) return false;
-    return backgroundHints(game, install).some((hint) => haystack.includes(hint));
-}
-
 async function backgroundOnHyprland(game: GameDefinition, install: InstallInfo, pids: number[]): Promise<number> {
     if (!process.env.HYPRLAND_INSTANCE_SIGNATURE || !(await commandAvailable('hyprctl'))) return 0;
 
@@ -678,12 +708,9 @@ async function backgroundOnHyprland(game: GameDefinition, install: InstallInfo, 
             if (!client.address) continue;
             if (client.workspace?.name === 'special:vaporstow') continue;
             const pidMatch = Boolean(client.pid && pids.includes(Number(client.pid)));
-            const metadataMatch = metadataMatchesGame(game, install, [
-                client.class,
-                client.title,
-                client.initialClass,
-                client.initialTitle
-            ]);
+            const metadataMatch = windowMatchesGame(game, install,
+                [client.class, client.initialClass],
+                [client.title, client.initialTitle]);
             if (!pidMatch && !metadataMatch) continue;
 
             if (await moveToHyprStash(client.address)) affected += 1;
@@ -723,15 +750,12 @@ async function backgroundOnSway(game: GameDefinition, install: InstallInfo, pids
         const tree = JSON.parse(stdout || '{}') as SwayNode;
         let affected = 0;
         for (const node of flattenSwayTree(tree)) {
-            if (!node.id) continue;
-            const pidMatch = Boolean(node.pid && pids.includes(Number(node.pid)));
-            const metadataMatch = metadataMatchesGame(game, install, [
-                node.name,
-                node.app_id,
-                node.window_properties?.class,
-                node.window_properties?.instance,
-                node.window_properties?.title
-            ]);
+            // Only windows have a pid: never move a workspace or an output.
+            if (!node.id || !node.pid) continue;
+            const pidMatch = pids.includes(Number(node.pid));
+            const metadataMatch = windowMatchesGame(game, install,
+                [node.app_id, node.window_properties?.class, node.window_properties?.instance],
+                [node.name, node.window_properties?.title]);
             if (!pidMatch && !metadataMatch) continue;
             try {
                 await execFileAsync('swaymsg', [`[con_id=${node.id}]`, 'move', 'scratchpad']);
@@ -770,7 +794,7 @@ async function backgroundOnNiri(game: GameDefinition, install: InstallInfo, pids
             if (!window.id) continue;
             if (stashWorkspaceId !== null && Number(window.workspace_id) === Number(stashWorkspaceId)) continue;
             const pidMatch = Boolean(window.pid && pids.includes(Number(window.pid)));
-            const metadataMatch = metadataMatchesGame(game, install, [window.app_id, window.title]);
+            const metadataMatch = windowMatchesGame(game, install, [window.app_id], [window.title]);
             if (!pidMatch && !metadataMatch) continue;
 
             try {
@@ -1078,8 +1102,8 @@ function startSwayWatcher(game: GameDefinition, install: InstallInfo): boolean {
         }
         const node = event.container;
         if (event.change !== 'new' || !node?.id) return;
-        const values = [node.app_id, node.name, node.window_properties?.class, node.window_properties?.instance];
-        if (!metadataMatchesGame(game, install, values)) return;
+        const classes = [node.app_id, node.window_properties?.class, node.window_properties?.instance];
+        if (!windowMatchesGame(game, install, classes, [node.name])) return;
         execFile('swaymsg', [`[con_id=${node.id}]`, 'move', 'scratchpad'], (error) => {
             if (!error) helper.hidden += 1;
         });
@@ -1098,9 +1122,15 @@ function isKdeSession(): boolean {
 // KWin runs scripts loaded over D-Bus: this one minimizes the game windows as
 // KWin adds them, before they get focus, and stops when it is unloaded.
 function kwinScript(game: GameDefinition, install: InstallInfo): string {
-    const pattern = backgroundHints(game, install).map((hint) => escapeRe2(hint)).join('|') || '^$';
+    const hints = backgroundHints(game, install);
+    const title = `^(${hints.map((hint) => escapeRe2(hint)).join('|')})${TITLE_VERSION}$`;
     return [
-        `const pattern = new RegExp(${JSON.stringify(pattern)}, 'i');`,
+        `const classes = ${JSON.stringify(hints)};`,
+        `const title = new RegExp(${JSON.stringify(hints.length ? title : '^$')}, 'i');`,
+        'function matches(window) {',
+        "    const names = [window.resourceClass, window.resourceName].map((value) => String(value || '').toLowerCase());",
+        "    return names.some((name) => classes.includes(name)) || title.test(String(window.caption || '').trim());",
+        '}',
         'function hide(window) {',
         '    window.minimized = true;',
         '    window.skipTaskbar = true;',
@@ -1108,9 +1138,7 @@ function kwinScript(game: GameDefinition, install: InstallInfo): string {
         '    window.skipSwitcher = true;',
         '}',
         'function consider(window) {',
-        '    if (!window.normalWindow && !window.dialog) return;',
-        "    const text = window.resourceClass + ' ' + window.resourceName + ' ' + window.caption;",
-        '    if (/vaporstow/i.test(text) || !pattern.test(text)) return;',
+        '    if ((!window.normalWindow && !window.dialog) || !matches(window)) return;',
         '    hide(window);',
         // Games often show themselves again once loaded (Electron's show(),
         // an activation request): hide again for as long as the script runs.
